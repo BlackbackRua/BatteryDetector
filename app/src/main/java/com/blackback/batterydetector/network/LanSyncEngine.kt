@@ -277,7 +277,7 @@ object LanSyncEngine {
             e.printStackTrace()
         }
 
-        createNotificationChannel(context)
+        ensureNotificationChannel(context)
 
         val scope = CoroutineScope(Dispatchers.IO)
 
@@ -421,7 +421,7 @@ object LanSyncEngine {
      * show nothing, and a test that shows nothing is worse than useless.
      */
     suspend fun showLocalTestNotification(context: Context, title: String, message: String) {
-        createNotificationChannel(context)
+        ensureNotificationChannel(context)
 
         val prefs = AppPreferences(context)
         val focusSupported = HyperOsFocusNotification.detectSupport(context).capability ==
@@ -575,7 +575,20 @@ object LanSyncEngine {
         )
     }
 
-    private fun createNotificationChannel(context: Context) {
+    /**
+     * Creates the alert channel if it is not there yet.
+     *
+     * Public because the settings screen must call it before opening the system's
+     * per-channel notification page. ColorOS (and possibly other skins) does not
+     * validate the channel id in ACTION_CHANNEL_NOTIFICATION_SETTINGS: asked about
+     * a channel that does not exist it still launches the activity, which then has
+     * nothing to show and renders as a blank page. Ensuring the channel exists
+     * first makes that page meaningful on every device.
+     *
+     * Safe to call repeatedly; createNotificationChannel is idempotent and leaves
+     * an existing channel's user settings alone aside from the description.
+     */
+    fun ensureNotificationChannel(context: Context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val soundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
                 ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)

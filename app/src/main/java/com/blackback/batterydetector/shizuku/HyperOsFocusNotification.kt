@@ -378,6 +378,13 @@ object HyperOsFocusNotification {
             builder.setStyle(buildProgressStyle(context, batteryLevel!!.coerceIn(0, 100)))
             builder.setOngoing(true)
             builder.setAutoCancel(false)
+            // Without this the notification only carries a progress style; the
+            // system is never asked to treat it as a live update, so no OEM surface
+            // (ColorOS Fluid Cloud, Pixel live updates, ...) picks it up. This call
+            // is what actually requests promotion.
+            builder.setRequestPromotedOngoing(true)
+            // Text shown in the collapsed capsule / status chip.
+            builder.setShortCriticalText(batteryLevel.toString() + "%")
         }
 
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
@@ -498,6 +505,10 @@ object HyperOsFocusNotification {
             builder.setStyle(buildProgressStyle(context, content.batteryLevel!!.coerceIn(0, 100)))
             builder.setOngoing(true)
             builder.setAutoCancel(false)
+            // See postStandardAlert: this is the call that asks the system to treat
+            // the notification as a live update instead of an ordinary one.
+            builder.setRequestPromotedOngoing(true)
+            builder.setShortCriticalText(content.batteryLevel.toString() + "%")
         }
 
         val notification = builder.build()

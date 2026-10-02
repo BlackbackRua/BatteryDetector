@@ -164,23 +164,45 @@ fun SettingsScreen(onBack: () -> Unit) {
     }
 
     fun openNotificationSettings() {
+        // The per-channel page needs the channel to exist. It is otherwise only
+        // created once the receiver starts or a test notification is sent, so on a
+        // fresh install this button used to open a blank screen on ColorOS: that
+        // skin does not validate the channel id and launches the activity anyway.
+        LanSyncEngine.ensureNotificationChannel(context)
+
+        val channelExists = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = context.getSystemService(android.app.NotificationManager::class.java)
+            manager?.getNotificationChannel(LanSyncEngine.CHANNEL_ID) != null
+        } else {
+            // Channels do not exist below API 26; the channel page is meaningless
+            // there, so fall through to the app-level page.
+            false
+        }
+
+        // Only open the channel page when there is really a channel behind it.
+        // Otherwise the app-level page is used, which always has content.
+        if (channelExists) {
+            try {
+                val intent = Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                    putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, LanSyncEngine.CHANNEL_ID)
+                }
+                context.startActivity(intent)
+                return
+            } catch (_: Exception) {
+                // Fall through to the app-level page below.
+            }
+        }
+
         try {
-            val intent = Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+            val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
                 putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
-                putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, LanSyncEngine.CHANNEL_ID)
+                putExtra("app_package", context.packageName)
+                putExtra("app_uid", context.applicationInfo.uid)
             }
             context.startActivity(intent)
         } catch (_: Exception) {
-            try {
-                val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                    putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    putExtra("app_package", context.packageName)
-                    putExtra("app_uid", context.applicationInfo.uid)
-                }
-                context.startActivity(intent)
-            } catch (_: Exception) {
-                Toast.makeText(context, "请在手机【设置-应用设置-通知管理】中开启【悬浮通知】和【响铃】", Toast.LENGTH_LONG).show()
-            }
+            Toast.makeText(context, "请在手机【设置-应用设置-通知管理】中开启【悬浮通知】和【响铃】", Toast.LENGTH_LONG).show()
         }
     }
 
