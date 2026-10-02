@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <style name="Theme.BatteryDetector" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowAnimationStyle">@style/Animation.BatteryDetector.Slide</item>
+    </style>
+
+    <!--
+        Activity transitions, drawn by the window manager instead of Compose.
+
+        activityOpen*  = opening the covered activity (dashboard -> settings)
+        activityClose* = closing it again (settings -> dashboard)
+
+        Those four are the stock slide pair. The framework only ships the "back"
+        pair as android.R.anim (slide_in_left / slide_out_right); the forward pair
+        lives in res/anim with the same interpolator and duration.
+
+        On Android 14+ the theme attributes no longer drive the open transition,
+        so SettingsActivity additionally calls Activity.overrideActivityTransition;
+        that call is only needed because of the version split, not because the
+        motion differs.
+    -->
+    <style name="Animation.BatteryDetector.Slide" parent="@android:style/Animation.Activity">
+        <item name="android:activityOpenEnterAnimation">@anim/slide_in_right</item>
+        <item name="android:activityOpenExitAnimation">@anim/slide_out_left</item>
+        <item name="android:activityCloseEnterAnimation">@anim/slide_in_left</item>
+        <item name="android:activityCloseExitAnimation">@anim/slide_out_right</item>
+    </style>
+
+</resources>

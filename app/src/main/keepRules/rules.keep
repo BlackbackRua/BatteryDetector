@@ -1,0 +1,52 @@
+# Project R8 keep rules.
+#
+# AGP combines every file in src/main/keepRules and passes them to R8, so this is
+# the project's canonical location. Standard minification (obfuscate + shrink) is
+# on for release, but the extra whole-program optimisations are deliberately left
+# off - see the comment in app/build.gradle.kts for the launch crash that
+# motivated that.
+#
+# The rules below cover code that is reached by name rather than by a direct
+# reference, which R8 cannot see and would otherwise strip or rename.
+
+# --- Shizuku user service -------------------------------------------------
+# Bound by class name at runtime: Shizuku starts an app_process and instantiates
+# this class reflectively. Renaming it - or removing the no-arg constructor that
+# AIDL generates - makes the focus-notification bypass fail with
+# ClassNotFoundException, and only on release builds.
+-keep class com.blackback.batterydetector.shizuku.PrivilegedServiceImpl { *; }
+-keep class com.blackback.batterydetector.IPrivilegedService { *; }
+-keep interface com.blackback.batterydetector.IPrivilegedService { *; }
+-keep class com.blackback.batterydetector.IPrivilegedService$* { *; }
+
+# Shizuku reaches into its own API reflectively as well.
+-keep class rikka.shizuku.** { *; }
+-keep class moe.shizuku.** { *; }
+-keep class rikka.sui.** { *; }
+
+# --- Components referenced from the manifest ------------------------------
+-keep class com.blackback.batterydetector.service.** { *; }
+-keep class com.blackback.batterydetector.MainActivity { *; }
+-keep class com.blackback.batterydetector.ui.SettingsActivity { *; }
+
+# --- Hidden APIs reached by reflection ------------------------------------
+# Private battery/telephony hooks are looked up with Class.forName and
+# getDeclaredMethod, so their names and signatures must survive.
+-keep class android.os.SystemProperties { *; }
+
+# --- Data holders ---------------------------------------------------------
+# Populated from the LAN payload JSON.
+-keep class com.blackback.batterydetector.data.BatteryInfo { *; }
+-keep class com.blackback.batterydetector.data.LogEntry { *; }
+
+# Attributes the libraries read at runtime.
+-keepattributes *Annotation*
+-keepattributes Signature
+-keepattributes InnerClasses
+-keepattributes EnclosingMethod
+
+# OkHttp references optional platforms that are not present on Android.
+-dontwarn org.conscrypt.**
+-dontwarn org.bouncycastle.**
+-dontwarn org.openjsse.**
+-dontwarn kotlinx.coroutines.debug.**

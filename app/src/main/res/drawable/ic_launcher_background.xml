@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Adaptive-icon background: the teal-to-cyan gradient, now filling the whole tile.
+
+    Kept as a vector so it scales cleanly at every density instead of shipping
+    per-density bitmap copies.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path android:pathData="M0,0h108v108h-108z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:startX="8"
+                android:startY="0"
+                android:endX="100"
+                android:endY="108"
+                android:type="linear">
+                <item android:offset="0" android:color="#FF5CE1B0" />
+                <item android:offset="1" android:color="#FF1FB6D6" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

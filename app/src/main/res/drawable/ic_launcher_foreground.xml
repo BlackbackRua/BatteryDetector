@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Adaptive-icon foreground: a charge bolt, centred in the tile.
+
+    The bolt's outline is asymmetric, so a translated copy is used rather than the
+    stock path: bounds are x 40..68 and y 30..78, putting its centre exactly on
+    (54, 54), the centre of the 108x108 viewport.
+
+    Kept inside the middle 72x72 safe zone so no round, squircle or teardrop mask
+    clips it. The same vector doubles as the themed (monochrome) icon, where only
+    its alpha matters.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M58.6,30L40,51.5h11.2L49.4,78l18.6,-23.5H56.8z" />
+</vector>

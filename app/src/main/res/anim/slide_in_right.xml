@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Platform-style activity transitions.
+
+    These are the four stock translation animations (the same interpolator and
+    duration the framework uses), needed because android.R.anim only ships the
+    "back" pair (slide_in_left / slide_out_right) and not the "forward" pair.
+-->
+<set xmlns:android="http://schemas.android.com/apk/res/android"
+    android:interpolator="@android:interpolator/decelerate_quint"
+    android:shareInterpolator="true">
+    <translate
+        android:fromXDelta="100%"
+        android:toXDelta="0%"
+        android:duration="250" />
+</set>

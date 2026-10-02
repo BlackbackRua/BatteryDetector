@@ -1,0 +1,39 @@
+# Gradle
+.gradle/
+build/
+app/build/
+
+# Android Studio's "Generate Signed App Bundle / APK" output directory.
+# Holds a signed APK and the R8 mapping, both of which are build output: the APK
+# is signed with whichever key was used at the time (a debug key in this project's
+# case, which must not be published) and the mapping changes on every build.
+app/release/
+
+# Kotlin incremental build state
+.kotlin/
+
+# Android Studio / IntelliJ
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Local machine configuration.
+# Holds sdk.dir and differs for every clone; must never be committed.
+local.properties
+
+# Signing material. Never commit a keystore or its passwords.
+*.jks
+*.keystore
+keystore.properties
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Development scratch files.
+# Screenshots captured while verifying behaviour on real hardware, plus matching
+# videos. Kept out so the repository holds source rather than test output.
+*.png
+*.mp4
