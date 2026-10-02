@@ -30,7 +30,7 @@ class AppPreferences(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_SERVICE_ENABLED, value).apply()
 
     var useRootMode: Boolean
-        get() = prefs.getBoolean(KEY_USE_ROOT, true)
+        get() = prefs.getBoolean(KEY_USE_ROOT, false)
         set(value) = prefs.edit().putBoolean(KEY_USE_ROOT, value).apply()
 
     var hasNotifiedLowBattery: Boolean
@@ -93,7 +93,7 @@ class AppPreferences(context: Context) {
      * are progress-centric, so the platform expects them to be ongoing.
      */
     var enableLiveUpdate: Boolean
-        get() = prefs.getBoolean(KEY_ENABLE_LIVE_UPDATE, true)
+        get() = prefs.getBoolean(KEY_ENABLE_LIVE_UPDATE, false)
         set(value) = prefs.edit().putBoolean(KEY_ENABLE_LIVE_UPDATE, value).apply()
 
     companion object {

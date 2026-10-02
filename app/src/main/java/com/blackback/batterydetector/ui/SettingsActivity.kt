@@ -23,9 +23,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -70,7 +68,6 @@ import com.blackback.batterydetector.network.RemoteNotifier
 import com.blackback.batterydetector.root.RootBatteryManager
 import com.blackback.batterydetector.service.BatteryMonitorService
 import com.blackback.batterydetector.shizuku.HyperOsFocusNotification
-import com.blackback.batterydetector.shizuku.ShizukuFocusGrant
 import com.blackback.batterydetector.utils.OemBatteryOptimizationHelper
 import com.blackback.batterydetector.utils.ShizukuRunner
 import com.blackback.batterydetector.ui.theme.BatteryDetectorTheme
@@ -142,14 +139,29 @@ fun SettingsScreen(onBack: () -> Unit) {
     var checkInterval by remember { mutableIntStateOf(prefs.checkIntervalMinutes) }
     var useRootMode by remember { mutableStateOf(prefs.useRootMode) }
 
-    // Debug-area state
     var useHyperOsBypass by remember { mutableStateOf(prefs.useHyperOsFocusBypass) }
     var enableDedup by remember { mutableStateOf(prefs.enableNotificationDedup) }
     var enableLiveUpdate by remember { mutableStateOf(prefs.enableLiveUpdate) }
-    var hyperOsSupport by remember { mutableStateOf("") }
-    var isTestingRoot by remember { mutableStateOf(false) }
     var isSendingTestPush by remember { mutableStateOf(false) }
+    var isCheckingRoot by remember { mutableStateOf(false) }
     var errorDialogMessage by remember { mutableStateOf<String?>(null) }
+
+    // Whether this device can actually render a Super Island. Kept as state rather
+    // than read inline so the island switch can be disabled with a clear reason
+    // instead of silently doing nothing when tapped.
+    val islandSupported = remember {
+        val support = HyperOsFocusNotification.detectSupport(context)
+        support.isXiaomi && support.capability == HyperOsFocusNotification.Capability.ISLAND
+    }
+
+    // A preference left true from a device that did support the island would keep
+    // posting focus notifications here, where the switch reads as off. Clear it so
+    // the stored state matches what the UI shows.
+    LaunchedEffect(islandSupported) {
+        if (!islandSupported && prefs.useHyperOsFocusBypass) {
+            prefs.useHyperOsFocusBypass = false
+        }
+    }
 
     fun openNotificationSettings() {
         try {
@@ -170,22 +182,6 @@ fun SettingsScreen(onBack: () -> Unit) {
                 Toast.makeText(context, "请在手机【设置-应用设置-通知管理】中开启【悬浮通知】和【响铃】", Toast.LENGTH_LONG).show()
             }
         }
-    }
-
-    fun openOverlayPermissionSettings() {
-        try {
-            val intent = Intent(
-                android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                android.net.Uri.parse("package:${context.packageName}")
-            )
-            context.startActivity(intent)
-        } catch (_: Exception) {
-            Toast.makeText(context, "请在系统设置中找到【悬浮窗/出现在其他应用上层】权限并开启", Toast.LENGTH_LONG).show()
-        }
-    }
-
-    LaunchedEffect(Unit) {
-        hyperOsSupport = HyperOsFocusNotification.detectSupport(context).summary
     }
 
     errorDialogMessage?.let { errorMsg ->
@@ -248,7 +244,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "本机与通信",
+                        text = "通信",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -260,7 +256,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                             deviceName = it
                             prefs.deviceName = it
                         },
-                        label = { Text("本机设备名称") },
+                        label = { Text("本机名称") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -271,7 +267,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                             lanPortStr = it
                             it.toIntOrNull()?.let { port -> prefs.lanPort = port }
                         },
-                        label = { Text("局域网通信端口") },
+                        label = { Text("端口") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -292,7 +288,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     Text(
-                        text = "通知与权限",
+                        text = "通知",
                         fontSize = 16.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -312,42 +308,20 @@ fun SettingsScreen(onBack: () -> Unit) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text(text = "收到的预警用实况通知显示", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            Text(text = "使用实况通知", fontSize = 13.sp, fontWeight = FontWeight.Medium)
                             Text(
-                                text = if (Build.VERSION.SDK_INT >= 36) {
-                                    "把收到的告警显示成进度卡片，进度即对方设备电量，" +
-                                        "在通知栏和锁屏直接可见。需要 Android 16 及以上。"
-                                } else {
-                                    "需要 Android 16 及以上，当前系统不支持，开关不生效。"
-                                },
+                                text = "需要 Android 16+，可能导致通知无法直接弹出。",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.outline
                             )
                         }
                         Switch(
                             checked = enableLiveUpdate,
-                            enabled = Build.VERSION.SDK_INT >= 36,
                             onCheckedChange = {
                                 enableLiveUpdate = it
                                 prefs.enableLiveUpdate = it
                             }
                         )
-                    }
-
-                    if (!android.provider.Settings.canDrawOverlays(context)) {
-                        OutlinedButton(
-                            onClick = { openOverlayPermissionSettings() },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.outlinedButtonColors(
-                                contentColor = MaterialTheme.colorScheme.error
-                            )
-                        ) {
-                            Text(
-                                "开启【出现在其他应用上层】(悬浮窗权限)",
-                                fontSize = 13.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
                     }
 
                     val isIgnoringBattery = OemBatteryOptimizationHelper.isIgnoringBatteryOptimizations(context)
@@ -364,6 +338,210 @@ fun SettingsScreen(onBack: () -> Unit) {
                             Text("开启后台保活与自启动权限", fontSize = 13.sp, fontWeight = FontWeight.Bold)
                         }
                     }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    // ---------------- HyperOS 超级岛 ----------------
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = if (islandSupported) {
+                                    "使用小米超级岛（实验性）"
+                                } else {
+                                    "使用小米超级岛（实验性）— 当前设备不可用"
+                                },
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = if (islandSupported) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    MaterialTheme.colorScheme.outline
+                                }
+                            )
+                            Text(
+                                text = if (islandSupported) {
+                                    "仅在 HyperOS 3.0 版本验证可用，可能出现通知无法显示的情况。"
+                                } else {
+                                    "需要小米 HyperOS 3.0 及以上系统。"
+                                },
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                        Switch(
+                            checked = useHyperOsBypass && islandSupported,
+                            enabled = islandSupported,
+                            onCheckedChange = {
+                                useHyperOsBypass = it
+                                prefs.useHyperOsFocusBypass = it
+                            }
+                        )
+                    }
+
+                    if (islandSupported) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            OutlinedButton(
+                                onClick = {
+                                    ShizukuRunner.grantHyperOsSuperIslandPermissions(
+                                        context,
+                                        LanSyncEngine.CHANNEL_ID
+                                    ) { msg ->
+                                        coroutineScope.launch(Dispatchers.Main) {
+                                            Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                                        }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("检测 Shizuku", fontSize = 13.sp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    coroutineScope.launch {
+                                        HyperOsFocusNotification.post(
+                                            context = context,
+                                            notificationId = 10012,
+                                            channelId = LanSyncEngine.CHANNEL_ID,
+                                            content = HyperOsFocusNotification.Content(
+                                                title = "BatteryDetector 超级岛测试",
+                                                body = "设备 [$deviceName] 超级岛通知测试",
+                                                deviceName = deviceName,
+                                                batteryLevel = (latestInfoState?.level ?: 88),
+                                                isCharging = latestInfoState?.isCharging == true,
+                                                isTest = true,
+                                                iconRes = R.drawable.ic_battery_notification
+                                            ),
+                                            useXmsfBypass = useHyperOsBypass
+                                        ) { line -> LogRepository.addLog("[超级岛] $line") }
+                                    }
+                                },
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("测试超级岛", fontSize = 13.sp)
+                            }
+                        }
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                    // ---------------- 收发链路自检 ----------------
+                    Text(text = "收发链路自检", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+
+                    // Short-window deduplication, which would otherwise swallow the
+                    // second of two quick test sends.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = "短时间内重复通知自动忽略", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                text = "同一设备5秒内仅能收到1次通知",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                        Switch(
+                            checked = enableDedup,
+                            onCheckedChange = {
+                                enableDedup = it
+                                prefs.enableNotificationDedup = it
+                            }
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            val trimmedWebhook = webhookUrl.trim()
+                            if (!enableLanBroadcast && trimmedWebhook.isEmpty()) {
+                                errorDialogMessage = "发送失败：未配置 Webhook 推送地址，且未开启局域网广播。"
+                                return@Button
+                            }
+
+                            isSendingTestPush = true
+                            val port = lanPortStr.toIntOrNull() ?: 18888
+
+                            coroutineScope.launch {
+                                LanSyncEngine.showLocalTestNotification(
+                                    context = context,
+                                    title = "BatteryDetector 测试推送",
+                                    message = "设备 [$deviceName] 测试通知"
+                                )
+                            }
+
+                            if (trimmedWebhook.isNotEmpty()) {
+                                RemoteNotifier.sendNotification(
+                                    webhookUrl = trimmedWebhook,
+                                    deviceName = deviceName,
+                                    batteryLevel = latestInfoState?.level ?: 88,
+                                    isTest = true
+                                ) { success, msg ->
+                                    coroutineScope.launch(Dispatchers.Main) {
+                                        isSendingTestPush = false
+                                        if (success) {
+                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            errorDialogMessage = msg
+                                        }
+                                    }
+                                }
+                            } else if (enableLanBroadcast) {
+                                LanSyncEngine.sendUdpBroadcast(
+                                    context = context,
+                                    port = port,
+                                    deviceName = deviceName,
+                                    batteryLevel = latestInfoState?.level ?: 88,
+                                    message = "局域网广播测试消息",
+                                    isTest = true
+                                ) { success, msg ->
+                                    coroutineScope.launch(Dispatchers.Main) {
+                                        isSendingTestPush = false
+                                        if (success) {
+                                            Toast.makeText(context, "局域网广播测试已发送", Toast.LENGTH_SHORT).show()
+                                        } else {
+                                            errorDialogMessage = "局域网广播发送失败:\n$msg"
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        enabled = !isSendingTestPush,
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(if (isSendingTestPush) "发送中..." else "广播测试预警到局域网设备", fontSize = 13.sp)
+                    }
+
+                    Button(
+                        onClick = {
+                            val port = lanPortStr.toIntOrNull() ?: 18888
+                            LanSyncEngine.sendUdpBroadcast(
+                                context = context,
+                                port = port,
+                                deviceName = "$deviceName (本机测试)",
+                                batteryLevel = 12,
+                                message = "接收方局域网同步测试",
+                                isTest = true
+                            ) { success, msg ->
+                                if (success) {
+                                    Toast.makeText(context, "已发送局域网同步测试数据", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    errorDialogMessage = "局域网测试同步发送失败:\n$msg"
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("广播低电量提醒到局域网设备", fontSize = 13.sp)
+                    }
                 }
             }
 
@@ -374,7 +552,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                         verticalArrangement = Arrangement.spacedBy(12.dp)
                     ) {
                         Text(
-                            text = "预警与推送",
+                            text = "推送",
                             fontSize = 16.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.primary
@@ -386,9 +564,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "开启局域网 UDP 广播同步", fontWeight = FontWeight.Medium)
+                                Text(text = "局域网 UDP 广播同步", fontWeight = FontWeight.Medium)
                                 Text(
-                                    text = "自动向局域网内所有接收方设备广播低电量预警",
+                                    text = "自动向局域网内所有接收方设备广播低电量预警；" +
+                                        "若关闭则需手动配置下方的推送地址。",
                                     fontSize = 12.sp,
                                     color = MaterialTheme.colorScheme.outline
                                 )
@@ -402,40 +581,46 @@ fun SettingsScreen(onBack: () -> Unit) {
                             )
                         }
 
-                        OutlinedTextField(
-                            value = webhookUrl,
-                            onValueChange = {
-                                webhookUrl = it
-                                prefs.webhookUrl = it
-                            },
-                            label = { Text("外网/指定 HTTP Webhook 地址") },
-                            placeholder = { Text("Bark / Telegram / Gotify / 局域网接收方 IP") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true
-                        )
+                        // The webhook only matters when the LAN route is off, so the
+                        // field is hidden while broadcasting is enabled rather than
+                        // sitting there looking like a required setting.
+                        if (!enableLanBroadcast) {
+                            OutlinedTextField(
+                                value = webhookUrl,
+                                onValueChange = {
+                                    webhookUrl = it
+                                    prefs.webhookUrl = it
+                                },
+                                label = { Text("外网/指定 HTTP Webhook 地址") },
+                                placeholder = { Text("Bark / Telegram / Gotify / 局域网接收方 IP") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
 
-                        Text(
-                            text = "快捷填充 Webhook 示例:",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.outline
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            SuggestionChip(
-                                onClick = {
-                                    val example = "https://day.app/YOUR_BARK_KEY/"
-                                    webhookUrl = example
-                                    prefs.webhookUrl = example
-                                },
-                                label = { Text("Bark (iOS)") }
+                            Text(
+                                text = "快捷填充 Webhook 示例:",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.outline
                             )
-                            SuggestionChip(
-                                onClick = {
-                                    val example = "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<CHAT_ID>"
-                                    webhookUrl = example
-                                    prefs.webhookUrl = example
-                                },
-                                label = { Text("Telegram") }
-                            )
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                SuggestionChip(
+                                    onClick = {
+                                        val example = "https://day.app/YOUR_BARK_KEY/"
+                                        webhookUrl = example
+                                        prefs.webhookUrl = example
+                                    },
+                                    label = { Text("Bark (iOS)") }
+                                )
+                                SuggestionChip(
+                                    onClick = {
+                                        val example = "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<CHAT_ID>"
+                                        webhookUrl = example
+                                        prefs.webhookUrl = example
+                                    },
+                                    label = { Text("Telegram") }
+                                )
+                            }
                         }
 
                         Column {
@@ -488,322 +673,44 @@ fun SettingsScreen(onBack: () -> Unit) {
                             }
                             Switch(
                                 checked = useRootMode,
-                                onCheckedChange = {
-                                    useRootMode = it
-                                    prefs.useRootMode = it
-                                }
-                            )
-                        }
-                    }
-                }
-            }
-
-            // ---------------- 调试区 ----------------
-
-            HorizontalDivider(modifier = Modifier.padding(top = 8.dp))
-
-            Text(
-                text = "调试区域",
-                fontSize = 16.sp,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.error
-            )
-            Text(
-                text = "以下为开发者排查与一次性修复用，不属于正常使用所需功能。",
-                fontSize = 11.sp,
-                color = MaterialTheme.colorScheme.outline
-            )
-
-            // 超级岛 / 焦点通知
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(text = "HyperOS 超级岛通知", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text(
-                        text = hyperOsSupport.ifEmpty { "正在探测设备能力..." },
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = "网络绕行（上岛开关）", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                            Text(
-                                text = "发通知瞬间切断 XMSF 网络，使其远程鉴权失败放行，系统随即上岛。" +
-                                    "这是唯一经真机验证有效的方式；期间本机小米推送中断约 1 秒。",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.outline
-                            )
-                        }
-                        Switch(
-                            checked = useHyperOsBypass,
-                            onCheckedChange = {
-                                useHyperOsBypass = it
-                                prefs.useHyperOsFocusBypass = it
-                            }
-                        )
-                    }
-
-                    HorizontalDivider()
-
-                    OutlinedButton(
-                        onClick = {
-                            coroutineScope.launch {
-                                hyperOsSupport = "正在写入白名单..."
-                                val result = ShizukuFocusGrant.grantFocusPermission(context)
-                                hyperOsSupport = result.message
-                                LogRepository.addLog("[超级岛] ${result.message}", isError = !result.success)
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("实验性：写入焦点通知白名单", fontSize = 11.sp)
-                    }
-                    Text(
-                        text = "实测在 HyperOS 3 上即使白名单为空 canShowFocus 也返回 true，" +
-                            "因此该写入无法确证能开通权限，请以上面的网络绕行为准。",
-                        fontSize = 10.sp,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-
-                    OutlinedButton(
-                        onClick = {
-                            ShizukuRunner.grantHyperOsSuperIslandPermissions(context, LanSyncEngine.CHANNEL_ID) { msg ->
-                                coroutineScope.launch(Dispatchers.Main) {
-                                    Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("使用 Shizuku 强制开启超级岛/悬浮通知", fontSize = 11.sp)
-                    }
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        OutlinedButton(
-                            onClick = {
-                                coroutineScope.launch {
-                                    hyperOsSupport = "检测中..."
-                                    val probe = ShizukuFocusGrant.probe(context)
-                                    val allowlist = ShizukuFocusGrant.readAllowlist(context)
-                                    val text = "$probe\n白名单: $allowlist"
-                                    hyperOsSupport = text
-                                    LogRepository.addLog("[超级岛] $text")
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("检测 Shizuku", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-
-                        Button(
-                            onClick = {
-                                coroutineScope.launch {
-                                    hyperOsSupport = "发送中..."
-                                    val result = HyperOsFocusNotification.post(
-                                        context = context,
-                                        notificationId = 10012,
-                                        channelId = LanSyncEngine.CHANNEL_ID,
-                                        content = HyperOsFocusNotification.Content(
-                                            title = "BatteryDetector 超级岛测试",
-                                            body = "设备 [$deviceName] 超级岛通知测试",
-                                            deviceName = deviceName,
-                                            batteryLevel = (latestInfoState?.level ?: 88),
-                                            isCharging = latestInfoState?.isCharging == true,
-                                            isTest = true,
-                                            iconRes = R.drawable.ic_battery_notification
-                                        ),
-                                        useXmsfBypass = useHyperOsBypass
-                                    ) { line -> LogRepository.addLog("[超级岛] $line") }
-                                    hyperOsSupport = result.message
-                                }
-                            },
-                            modifier = Modifier.weight(1f)
-                        ) {
-                            Text("测试超级岛", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        }
-                    }
-                }
-            }
-
-            // 收发链路自检
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(text = "收发自检", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-                    Text(
-                        text = "用于确认通知链路是否正常，需要另一台设备配合或本机回环。",
-                        fontSize = 11.sp,
-                        color = MaterialTheme.colorScheme.outline
-                    )
-
-                    // Short-window deduplication, which would otherwise swallow the
-                    // second of two quick test sends.
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = "短时间内重复通知自动忽略", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                            Text(
-                                text = "开启后，同一设备、同一电量在 5 秒内重复到达只处理一次。" +
-                                    "调试接收时建议关闭，否则第二次测试会被静默丢弃。",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.outline
-                            )
-                        }
-                        Switch(
-                            checked = enableDedup,
-                            onCheckedChange = {
-                                enableDedup = it
-                                prefs.enableNotificationDedup = it
-                            }
-                        )
-                    }
-
-                    Button(
-                        onClick = {
-                            val trimmedWebhook = webhookUrl.trim()
-                            if (!enableLanBroadcast && trimmedWebhook.isEmpty()) {
-                                errorDialogMessage = "发送失败：未配置 Webhook 推送地址，且未开启局域网广播。"
-                                return@Button
-                            }
-
-                            isSendingTestPush = true
-                            val port = lanPortStr.toIntOrNull() ?: 18888
-
-                            coroutineScope.launch {
-                                LanSyncEngine.showLocalTestNotification(
-                                    context = context,
-                                    title = "BatteryDetector 测试推送",
-                                    message = "设备 [$deviceName] 测试通知与超级岛显示正常！"
-                                )
-                            }
-
-                            if (trimmedWebhook.isNotEmpty()) {
-                                RemoteNotifier.sendNotification(
-                                    webhookUrl = trimmedWebhook,
-                                    deviceName = deviceName,
-                                    batteryLevel = latestInfoState?.level ?: 88,
-                                    isTest = true
-                                ) { success, msg ->
-                                    coroutineScope.launch(Dispatchers.Main) {
-                                        isSendingTestPush = false
-                                        if (success) {
-                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
+                                enabled = !isCheckingRoot,
+                                onCheckedChange = { wantsRoot ->
+                                    if (!wantsRoot) {
+                                        useRootMode = false
+                                        prefs.useRootMode = false
+                                        return@Switch
+                                    }
+                                    // Turning it on has to prove su works first. Leaving
+                                    // the switch on when it does not would silently fall
+                                    // back to the standard API at every check anyway.
+                                    isCheckingRoot = true
+                                    coroutineScope.launch {
+                                        val hasRoot = withContext(Dispatchers.IO) {
+                                            RootBatteryManager.checkRootAccess()
+                                        }
+                                        isCheckingRoot = false
+                                        if (hasRoot) {
+                                            useRootMode = true
+                                            prefs.useRootMode = true
+                                            Toast.makeText(
+                                                context,
+                                                "Root 权限可用 (uid=0)，已切换为 Root 模式",
+                                                Toast.LENGTH_SHORT
+                                            ).show()
+                                            LogRepository.addLog("Root 权限检测通过，已开启 Root 模式")
                                         } else {
-                                            errorDialogMessage = msg
+                                            useRootMode = false
+                                            prefs.useRootMode = false
+                                            errorDialogMessage =
+                                                "无法获取 Root 权限。\n\n" +
+                                                    "请确认设备已 Root，并在 Root 管理软件" +
+                                                    "（Magisk / APatch / KernelSU）中为本应用授权。"
+                                            LogRepository.addLog("Root 权限检测失败，已保持关闭", isError = true)
                                         }
                                     }
                                 }
-                            } else if (enableLanBroadcast) {
-                                LanSyncEngine.sendUdpBroadcast(
-                                    context = context,
-                                    port = port,
-                                    deviceName = deviceName,
-                                    batteryLevel = latestInfoState?.level ?: 88,
-                                    message = "局域网广播测试消息",
-                                    isTest = true
-                                ) { success, msg ->
-                                    coroutineScope.launch(Dispatchers.Main) {
-                                        isSendingTestPush = false
-                                        if (success) {
-                                            Toast.makeText(context, "局域网广播测试已发送", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            errorDialogMessage = "局域网广播发送失败:\n$msg"
-                                        }
-                                    }
-                                }
-                            }
-                        },
-                        enabled = !isSendingTestPush,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (isSendingTestPush) "发送中..." else "测试推送通知")
-                    }
-
-                    OutlinedButton(
-                        onClick = {
-                            val port = lanPortStr.toIntOrNull() ?: 18888
-                            LanSyncEngine.sendUdpBroadcast(
-                                context = context,
-                                port = port,
-                                deviceName = "$deviceName (本机测试)",
-                                batteryLevel = 12,
-                                message = "接收方局域网同步测试",
-                                isTest = true
-                            ) { success, msg ->
-                                if (success) {
-                                    Toast.makeText(context, "已发送局域网同步测试数据", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    errorDialogMessage = "局域网测试同步发送失败:\n$msg"
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("测试接收同步", fontSize = 12.sp)
-                    }
-                }
-            }
-
-            // Root 权限
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(text = "Root 权限", fontWeight = FontWeight.Bold, fontSize = 14.sp)
-
-                    Button(
-                        onClick = {
-                            isTestingRoot = true
-                            coroutineScope.launch(Dispatchers.IO) {
-                                val hasRoot = RootBatteryManager.checkRootAccess()
-                                withContext(Dispatchers.Main) {
-                                    isTestingRoot = false
-                                    if (hasRoot) {
-                                        Toast.makeText(context, "Root 权限测试成功 (uid=0)", Toast.LENGTH_SHORT).show()
-                                        LogRepository.addLog("Root 权限测试成功 (uid=0)")
-                                    } else {
-                                        val errMsg = "Root 权限测试失败：无法执行 su 命令。\n\n请检查设备是否已 Root，并在 Root 管理软件（如 Magisk / APatch / KernelSU）中允许获取权限。"
-                                        errorDialogMessage = errMsg
-                                        LogRepository.addLog(errMsg, isError = true)
-                                    }
-                                }
-                            }
-                        },
-                        enabled = !isTestingRoot,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (isTestingRoot) "Root 测试中..." else "测试 Root 权限")
+                            )
+                        }
                     }
                 }
             }

@@ -195,7 +195,7 @@ fun BatteryDashboardScreen() {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        text = "设备状态概览",
+                        text = "设备状态",
                         fontSize = 18.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.primary
@@ -264,16 +264,16 @@ fun BatteryDashboardScreen() {
 
                     HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
-                    // 后台服务开关
+                    // 服务开关
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Column {
-                            Text(text = "后台服务", fontWeight = FontWeight.Bold)
+                            Text(text = "服务", fontWeight = FontWeight.Bold)
                             Text(
-                                text = if (isServiceRunning) "服务在后台运行中" else "关闭状态 (开启后配置服务模式)",
+                                text = if (isServiceRunning) "服务运行中" else "关闭状态 (开启后配置服务模式)",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.outline
                             )
@@ -436,7 +436,7 @@ fun BatteryDashboardScreen() {
                     ) {
                         if (logs.isEmpty()) {
                             Text(
-                                text = "暂无运行日志...",
+                                text = "╰(￣ω￣ｏ)",
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 12.sp
