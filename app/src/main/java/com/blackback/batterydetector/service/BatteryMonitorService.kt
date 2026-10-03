@@ -181,7 +181,11 @@ class BatteryMonitorService : Service() {
                         batteryLevel = batteryLevel,
                         isTest = isTest,
                         method = prefs.webhookMethod,
-                        headers = prefs.webhookHeaders
+                        headers = prefs.webhookHeaders,
+                        service = prefs.webhookService,
+                        customBody = prefs.webhookCustomBody,
+                        barkSound = prefs.barkSound,
+                        barkLevel = prefs.barkLevel
                     ) { success, _ -> if (cont.isActive) cont.resume(success) }
                 }
                 onResult(ok)

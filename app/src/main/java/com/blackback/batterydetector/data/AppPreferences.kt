@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
 import com.blackback.batterydetector.network.SmtpMailer
+import com.blackback.batterydetector.network.WebhookRequestBuilder
 
 class AppPreferences(context: Context) {
 
@@ -28,6 +29,34 @@ class AppPreferences(context: Context) {
     var webhookHeaders: String
         get() = prefs.getString(KEY_WEBHOOK_HEADERS, "") ?: ""
         set(value) = prefs.edit().putString(KEY_WEBHOOK_HEADERS, value).apply()
+
+    /**
+     * Which payload shape to send.
+     *
+     * One of [WebhookRequestBuilder.SERVICE_AUTO], `SERVICE_BARK`,
+     * `SERVICE_TELEGRAM`, `SERVICE_CUSTOM`. Chosen explicitly rather than sniffed
+     * from the URL, so a self-hosted Bark server - whose host contains no `day.app`
+     * - still receives the Bark payload it expects.
+     */
+    var webhookService: String
+        get() = prefs.getString(KEY_WEBHOOK_SERVICE, WebhookRequestBuilder.SERVICE_AUTO)
+            ?: WebhookRequestBuilder.SERVICE_AUTO
+        set(value) = prefs.edit().putString(KEY_WEBHOOK_SERVICE, value).apply()
+
+    /** Custom JSON body template; only used when the service is CUSTOM. */
+    var webhookCustomBody: String
+        get() = prefs.getString(KEY_WEBHOOK_CUSTOM_BODY, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_WEBHOOK_CUSTOM_BODY, value).apply()
+
+    /** Bark `sound` parameter; blank uses the Bark app default. */
+    var barkSound: String
+        get() = prefs.getString(KEY_BARK_SOUND, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_BARK_SOUND, value).apply()
+
+    /** Bark `level` parameter: blank, `active`, `timeSensitive` or `critical`. */
+    var barkLevel: String
+        get() = prefs.getString(KEY_BARK_LEVEL, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_BARK_LEVEL, value).apply()
 
     /**
      * Which delivery route the alert uses.
@@ -181,6 +210,10 @@ class AppPreferences(context: Context) {
         private const val KEY_SMTP_TO = "smtp_to"
         private const val KEY_WEBHOOK_METHOD = "webhook_method"
         private const val KEY_WEBHOOK_HEADERS = "webhook_headers"
+        private const val KEY_WEBHOOK_SERVICE = "webhook_service"
+        private const val KEY_WEBHOOK_CUSTOM_BODY = "webhook_custom_body"
+        private const val KEY_BARK_SOUND = "bark_sound"
+        private const val KEY_BARK_LEVEL = "bark_level"
         private const val KEY_PUSH_METHOD = "push_method"
 
         /** Push route identifiers, also used as the stored preference values. */

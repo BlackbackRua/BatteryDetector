@@ -19,7 +19,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsBottomHeight
+import androidx.compose.ui.draw.rotate
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -71,6 +73,7 @@ import com.blackback.batterydetector.data.LogRepository
 import com.blackback.batterydetector.network.LanSyncEngine
 import com.blackback.batterydetector.network.RemoteNotifier
 import com.blackback.batterydetector.network.SmtpMailer
+import com.blackback.batterydetector.network.WebhookRequestBuilder
 import com.blackback.batterydetector.service.BatteryMonitorService
 import com.blackback.batterydetector.shizuku.HyperOsFocusNotification
 import com.blackback.batterydetector.utils.OemBatteryOptimizationHelper
@@ -145,6 +148,30 @@ private fun pushMethodLabel(value: String): String =
     PUSH_OPTIONS.firstOrNull { it.first == value }?.second ?: "局域网广播"
 
 /**
+ * Notification service shapes offered by the webhook service picker.
+ *
+ * Explicit rather than sniffed from the URL: a self-hosted Bark server has no
+ * `day.app` in its host, so guessing sent it the wrong payload entirely.
+ */
+private val SERVICE_OPTIONS = listOf(
+    WebhookRequestBuilder.SERVICE_AUTO to "自动识别",
+    WebhookRequestBuilder.SERVICE_BARK to "Bark",
+    WebhookRequestBuilder.SERVICE_TELEGRAM to "Telegram Bot",
+    WebhookRequestBuilder.SERVICE_CUSTOM to "自定义请求体"
+)
+
+private fun serviceLabel(value: String): String =
+    SERVICE_OPTIONS.firstOrNull { it.first == value }?.second ?: "自动识别"
+
+/** Bark `level` values; blank means the Bark app default. */
+private val BARK_LEVELS = listOf(
+    "" to "默认",
+    "active" to "active",
+    "timeSensitive" to "时效性",
+    "critical" to "重要警告"
+)
+
+/**
  * Sends one alert over whichever route is currently selected.
  *
  * Extracted from the settings screen so it can sit at the bottom of the push card,
@@ -158,6 +185,10 @@ private fun TestAlertButton(
     webhookUrl: String,
     webhookMethod: String,
     webhookHeaders: String,
+    webhookService: String,
+    webhookCustomBody: String,
+    barkSound: String,
+    barkLevel: String,
     deviceName: String,
     batteryLevel: Int,
     lanPortStr: String,
@@ -215,7 +246,11 @@ private fun TestAlertButton(
                                 batteryLevel = batteryLevel,
                                 isTest = true,
                                 method = webhookMethod,
-                                headers = webhookHeaders
+                                headers = webhookHeaders,
+                                service = webhookService,
+                                customBody = webhookCustomBody,
+                                barkSound = barkSound,
+                                barkLevel = barkLevel
                             ) { success, msg ->
                                 if (!success) failure = msg
                                 if (cont.isActive) cont.resume(success)
@@ -287,6 +322,12 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
     var webhookUrl by remember { mutableStateOf(prefs.webhookUrl) }
     var webhookMethod by remember { mutableStateOf(prefs.webhookMethod) }
     var webhookHeaders by remember { mutableStateOf(prefs.webhookHeaders) }
+    var webhookService by remember { mutableStateOf(prefs.webhookService) }
+    var webhookCustomBody by remember { mutableStateOf(prefs.webhookCustomBody) }
+    var barkSound by remember { mutableStateOf(prefs.barkSound) }
+    var barkLevel by remember { mutableStateOf(prefs.barkLevel) }
+    var serviceMenuExpanded by remember { mutableStateOf(false) }
+    var barkLevelMenuExpanded by remember { mutableStateOf(false) }
     var pushMethod by remember { mutableStateOf(prefs.pushMethod) }
     var pushMenuExpanded by remember { mutableStateOf(false) }
     var smtpHost by remember { mutableStateOf(prefs.smtpHost) }
@@ -647,7 +688,14 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                                     modifier = Modifier.weight(1f),
                                     fontSize = 13.sp
                                 )
-                                Text("▾", fontSize = 13.sp)
+                                Icon(
+                                    painter = painterResource(R.drawable.ic_arrow_drop_down),
+                                    contentDescription = "下拉菜单",
+                                    modifier = Modifier
+                                        .size(24.dp)
+                                        .rotate(if (pushMenuExpanded) 180f else 0f),
+                                    tint = MaterialTheme.colorScheme.primary
+                                )
                             }
                             DropdownMenu(
                                 expanded = pushMenuExpanded,
@@ -704,6 +752,178 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
+
+                            // Service shape. Explicit so a self-hosted Bark server,
+                            // whose host contains no day.app, still receives Bark's
+                            // payload instead of the generic one.
+                            Box {
+                                OutlinedButton(
+                                    onClick = { serviceMenuExpanded = true },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text(
+                                        "服务类型：${serviceLabel(webhookService)}",
+                                        modifier = Modifier.weight(1f),
+                                        fontSize = 13.sp
+                                    )
+                                    Icon(
+                                        painter = painterResource(R.drawable.ic_arrow_drop_down),
+                                        contentDescription = "下拉菜单",
+                                        modifier = Modifier
+                                            .size(24.dp)
+                                            .rotate(if (serviceMenuExpanded) 180f else 0f),
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = serviceMenuExpanded,
+                                    onDismissRequest = { serviceMenuExpanded = false },
+                                    modifier = Modifier.fillMaxWidth(0.92f)
+                                ) {
+                                    SERVICE_OPTIONS.forEach { (value, label) ->
+                                        DropdownMenuItem(
+                                            text = { Text(label, fontSize = 13.sp) },
+                                            trailingIcon = {
+                                                RadioButton(
+                                                    selected = webhookService == value,
+                                                    onClick = null
+                                                )
+                                            },
+                                            onClick = {
+                                                webhookService = value
+                                                prefs.webhookService = value
+                                                serviceMenuExpanded = false
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+
+                            when (webhookService) {
+                                WebhookRequestBuilder.SERVICE_BARK -> {
+                                    Text(
+                                        text = "Bark 官方服务器与自建 bark-server 都选这一项。" +
+                                            "地址填到 key 为止，例如 https://day.app/你的KEY/",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        OutlinedTextField(
+                                            value = barkSound,
+                                            onValueChange = {
+                                                barkSound = it
+                                                prefs.barkSound = it
+                                            },
+                                            label = { Text("铃声 sound（可空）") },
+                                            placeholder = { Text("alarm") },
+                                            modifier = Modifier.weight(1f),
+                                            singleLine = true
+                                        )
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            OutlinedButton(
+                                                onClick = { barkLevelMenuExpanded = true },
+                                                modifier = Modifier.fillMaxWidth()
+                                            ) {
+                                                val current = BARK_LEVELS
+                                                    .firstOrNull { it.first == barkLevel }?.second
+                                                    ?: "默认"
+                                                Text("级别：$current", modifier = Modifier.weight(1f), fontSize = 12.sp)
+                                                Icon(
+                                                    painter = painterResource(R.drawable.ic_arrow_drop_down),
+                                                    contentDescription = "下拉菜单",
+                                                    modifier = Modifier
+                                                        .size(24.dp)
+                                                        .rotate(if (barkLevelMenuExpanded) 180f else 0f),
+                                                    tint = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                            DropdownMenu(
+                                                expanded = barkLevelMenuExpanded,
+                                                onDismissRequest = { barkLevelMenuExpanded = false }
+                                            ) {
+                                                BARK_LEVELS.forEach { (value, label) ->
+                                                    DropdownMenuItem(
+                                                        text = { Text(label, fontSize = 13.sp) },
+                                                        onClick = {
+                                                            barkLevel = value
+                                                            prefs.barkLevel = value
+                                                            barkLevelMenuExpanded = false
+                                                        }
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                WebhookRequestBuilder.SERVICE_TELEGRAM -> {
+                                    Text(
+                                        text = "地址需含 token 与 chat_id，例如 " +
+                                            "https://api.telegram.org/bot<TOKEN>/sendMessage?chat_id=<CHAT_ID>",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+
+                                WebhookRequestBuilder.SERVICE_CUSTOM -> {
+                                    Text(
+                                        text = "自定义 JSON 请求体。可用占位符（字符串值需自己加引号）：" +
+                                            "{{title}} {{message}} {{device}} {{battery}} {{timestamp}}",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                    OutlinedTextField(
+                                        value = webhookCustomBody,
+                                        onValueChange = {
+                                            webhookCustomBody = it
+                                            prefs.webhookCustomBody = it
+                                        },
+                                        label = { Text("请求体模板") },
+                                        placeholder = {
+                                            Text("""{"content":"{{message}}","level":{{battery}}}""")
+                                        },
+                                        modifier = Modifier.fillMaxWidth(),
+                                        minLines = 3
+                                    )
+                                    // Live feedback, because the send path refuses
+                                    // malformed JSON outright.
+                                    val preview = WebhookRequestBuilder.renderTemplate(
+                                        template = webhookCustomBody,
+                                        title = "低电量预警",
+                                        message = "设备 [示例] 当前电量仅剩 12%，请及时充电！",
+                                        deviceName = "示例",
+                                        batteryLevel = 12,
+                                        timestamp = 0L
+                                    )
+                                    val bodyOk = webhookCustomBody.isNotBlank() &&
+                                        WebhookRequestBuilder.isValidJson(preview)
+                                    Text(
+                                        text = when {
+                                            webhookCustomBody.isBlank() -> "填入模板后这里会显示校验结果。"
+                                            bodyOk -> "✓ 模板校验通过"
+                                            else -> "✗ 模板不是合法 JSON，发送会被拒绝"
+                                        },
+                                        fontSize = 11.sp,
+                                        color = if (bodyOk) {
+                                            MaterialTheme.colorScheme.primary
+                                        } else {
+                                            MaterialTheme.colorScheme.outline
+                                        }
+                                    )
+                                }
+
+                                else -> {
+                                    Text(
+                                        text = "按地址自动判断服务类型；无法识别时使用通用 JSON" +
+                                            "（title / text / message / device / battery / timestamp）。",
+                                        fontSize = 11.sp,
+                                        color = MaterialTheme.colorScheme.outline
+                                    )
+                                }
+                            }
 
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
@@ -939,6 +1159,10 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                             webhookUrl = webhookUrl,
                             webhookMethod = webhookMethod,
                             webhookHeaders = webhookHeaders,
+                            webhookService = webhookService,
+                            webhookCustomBody = webhookCustomBody,
+                            barkSound = barkSound,
+                            barkLevel = barkLevel,
                             deviceName = deviceName,
                             batteryLevel = latestInfoState?.level ?: 88,
                             lanPortStr = lanPortStr,

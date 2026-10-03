@@ -39,6 +39,10 @@ object RemoteNotifier {
         isTest: Boolean = false,
         method: String = "POST",
         headers: String = "",
+        service: String = WebhookRequestBuilder.SERVICE_AUTO,
+        customBody: String = "",
+        barkSound: String = "",
+        barkLevel: String = "",
         onResult: (Boolean, String) -> Unit
     ) {
         val formattedUrl = normalizeUrl(webhookUrl)
@@ -56,8 +60,41 @@ object RemoteNotifier {
             "警告：设备 [$deviceName] 当前电量仅剩 $batteryLevel%，请及时充电！"
         }
 
+        // A custom template is validated before anything is sent. Posting malformed
+        // JSON would otherwise surface as a vague network failure while the receiver
+        // simply rejects the body.
+        val resolvedService = WebhookRequestBuilder.resolveService(service, formattedUrl)
+        if (resolvedService == WebhookRequestBuilder.SERVICE_CUSTOM) {
+            val rendered = WebhookRequestBuilder.renderTemplate(
+                template = customBody,
+                title = title,
+                message = message,
+                deviceName = deviceName,
+                batteryLevel = batteryLevel,
+                timestamp = System.currentTimeMillis()
+            )
+            if (!WebhookRequestBuilder.isValidJson(rendered)) {
+                val errorMsg = "推送失败: 自定义请求体不是合法 JSON，请检查括号、引号与逗号"
+                LogRepository.addLog(errorMsg, isError = true, isPushEvent = true)
+                onResult(false, errorMsg)
+                return
+            }
+        }
+
         val request = try {
-            buildRequest(formattedUrl, method, headers, title, message, deviceName, batteryLevel)
+            buildRequest(
+                url = formattedUrl,
+                service = resolvedService,
+                method = method,
+                headers = headers,
+                customBody = customBody,
+                barkSound = barkSound,
+                barkLevel = barkLevel,
+                title = title,
+                message = message,
+                deviceName = deviceName,
+                batteryLevel = batteryLevel
+            )
         } catch (e: Exception) {
             val errorMsg = "推送失败: URL 格式无效 (${e.localizedMessage})"
             LogRepository.addLog(errorMsg, isError = true, isPushEvent = true)
@@ -96,8 +133,12 @@ object RemoteNotifier {
      */
     private fun buildRequest(
         url: String,
+        service: String,
         method: String,
         headers: String,
+        customBody: String,
+        barkSound: String,
+        barkLevel: String,
         title: String,
         message: String,
         deviceName: String,
@@ -105,8 +146,12 @@ object RemoteNotifier {
     ): Request {
         val spec = WebhookRequestBuilder.build(
             url = url,
+            service = service,
             method = method,
             rawHeaders = headers,
+            customBody = customBody,
+            barkSound = barkSound,
+            barkLevel = barkLevel,
             title = title,
             message = message,
             deviceName = deviceName,

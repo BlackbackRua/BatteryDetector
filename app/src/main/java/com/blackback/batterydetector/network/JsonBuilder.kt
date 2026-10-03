@@ -62,9 +62,17 @@ internal class JsonBuilder {
          * is emitted as-is; the request is sent as UTF-8, so Chinese text and emoji
          * survive without escaping.
          */
-        fun quote(value: String): String {
+        fun quote(value: String): String = "\"" + escapeContent(value) + "\""
+
+        /**
+         * Escapes a value for use *inside* an existing JSON string literal.
+         *
+         * Adds no surrounding quotes, because the caller's template already supplies
+         * them: substituting `{{title}}` into `"{{title}}"` must produce `"标题"`,
+         * not `""标题""`.
+         */
+        fun escapeContent(value: String): String {
             val sb = StringBuilder(value.length + 2)
-            sb.append('"')
             for (ch in value) {
                 when (ch) {
                     '"' -> sb.append("\\\"")
@@ -87,7 +95,6 @@ internal class JsonBuilder {
                     }
                 }
             }
-            sb.append('"')
             return sb.toString()
         }
     }

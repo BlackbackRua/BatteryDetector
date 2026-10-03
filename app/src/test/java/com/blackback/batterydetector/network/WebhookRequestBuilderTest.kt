@@ -88,7 +88,9 @@ class WebhookRequestBuilderTest {
     fun `telegram urls get the telegram shape`() {
         val spec = WebhookRequestBuilder.build(
             url = "https://api.telegram.org/bot123/sendMessage",
-            method = "POST", rawHeaders = "",
+            service = WebhookRequestBuilder.SERVICE_TELEGRAM,
+            method = "POST", rawHeaders = "", customBody = "",
+            barkSound = "", barkLevel = "",
             title = "T", message = "M", deviceName = "D",
             batteryLevel = 3, timestamp = 0L
         )
@@ -102,7 +104,9 @@ class WebhookRequestBuilderTest {
     fun `bark urls get the bark shape`() {
         val spec = WebhookRequestBuilder.build(
             url = "https://day.app/KEY/",
-            method = "POST", rawHeaders = "",
+            service = WebhookRequestBuilder.SERVICE_BARK,
+            method = "POST", rawHeaders = "", customBody = "",
+            barkSound = "", barkLevel = "",
             title = "T", message = "M", deviceName = "D",
             batteryLevel = 3, timestamp = 0L
         )
@@ -110,18 +114,165 @@ class WebhookRequestBuilderTest {
         assertTrue(body.contains("\"title\":\"T\""))
         assertTrue(body.contains("\"body\":\"M\""))
         assertTrue(body.contains("\"group\":\"BatteryDetector\""))
+        // `device` is not a Bark parameter and must not be sent.
+        assertFalse(body.contains("device"))
+    }
+
+    @Test
+    fun `bark optional sound and level are only sent when set`() {
+        val bare = WebhookRequestBuilder.barkBody("T", "M", "", "")
+        assertFalse(bare.contains("sound"))
+        assertFalse(bare.contains("level"))
+
+        val full = WebhookRequestBuilder.barkBody("T", "M", "alarm", "critical")
+        assertTrue(full.contains("\"sound\":\"alarm\""))
+        assertTrue(full.contains("\"level\":\"critical\""))
+    }
+
+    @Test
+    fun `a self-hosted bark server still gets the bark payload`() {
+        // The host contains no day.app, which is exactly why URL sniffing failed.
+        val spec = WebhookRequestBuilder.build(
+            url = "https://bark.myhost.internal/KEY/",
+            service = WebhookRequestBuilder.SERVICE_BARK,
+            method = "POST", rawHeaders = "", customBody = "",
+            barkSound = "", barkLevel = "",
+            title = "T", message = "M", deviceName = "D",
+            batteryLevel = 3, timestamp = 0L
+        )
+        assertTrue(spec.body!!.contains("\"body\":\"M\""))
     }
 
     @Test
     fun `unknown urls get the generic shape and carry headers`() {
         val spec = WebhookRequestBuilder.build(
             url = "https://self.hosted/notify",
-            method = "POST", rawHeaders = "X-Api-Key: k",
+            service = WebhookRequestBuilder.SERVICE_AUTO,
+            method = "POST", rawHeaders = "X-Api-Key: k", customBody = "",
+            barkSound = "", barkLevel = "",
             title = "T", message = "M", deviceName = "D",
             batteryLevel = 7, timestamp = 5L
         )
         assertTrue(spec.body!!.contains("\"battery\":7"))
         assertEquals(listOf("X-Api-Key" to "k"), spec.extraHeaders)
+    }
+
+    // ----------------------------------------------------------- service choice
+
+    @Test
+    fun `resolveService honours an explicit choice over the url`() {
+        // A telegram-looking URL must still obey an explicit BARK selection.
+        assertEquals(
+            WebhookRequestBuilder.SERVICE_BARK,
+            WebhookRequestBuilder.resolveService(
+                WebhookRequestBuilder.SERVICE_BARK,
+                "https://api.telegram.org/bot1/sendMessage"
+            )
+        )
+    }
+
+    @Test
+    fun `resolveService auto-detects known hosts as a fallback`() {
+        assertEquals(
+            WebhookRequestBuilder.SERVICE_TELEGRAM,
+            WebhookRequestBuilder.resolveService(
+                WebhookRequestBuilder.SERVICE_AUTO,
+                "https://api.telegram.org/bot123/sendMessage"
+            )
+        )
+        assertEquals(
+            WebhookRequestBuilder.SERVICE_BARK,
+            WebhookRequestBuilder.resolveService(
+                WebhookRequestBuilder.SERVICE_AUTO,
+                "https://day.app/KEY/"
+            )
+        )
+        assertEquals(
+            WebhookRequestBuilder.SERVICE_AUTO,
+            WebhookRequestBuilder.resolveService(
+                WebhookRequestBuilder.SERVICE_AUTO,
+                "https://self.hosted/notify"
+            )
+        )
+    }
+
+    // ------------------------------------------------------ custom body template
+
+    @Test
+    fun `renderTemplate substitutes every token`() {
+        val out = WebhookRequestBuilder.renderTemplate(
+            template = """{"t":"{{title}}","m":"{{message}}","d":"{{device}}","b":{{battery}},"ts":{{timestamp}}}""",
+            title = "标题", message = "正文", deviceName = "设备",
+            batteryLevel = 12, timestamp = 99L
+        )
+        assertTrue(out.contains("\"t\":\"标题\""))
+        assertTrue(out.contains("\"m\":\"正文\""))
+        assertTrue(out.contains("\"d\":\"设备\""))
+        // Numbers stay unquoted so they remain numeric.
+        assertTrue(out.contains("\"b\":12"))
+        assertTrue(out.contains("\"ts\":99"))
+        assertTrue(WebhookRequestBuilder.isValidJson(out))
+    }
+
+    @Test
+    fun `renderTemplate escapes quotes so the document stays valid`() {
+        val out = WebhookRequestBuilder.renderTemplate(
+            template = """{"device":"{{device}}"}""",
+            title = "", message = "", deviceName = "He said \"hi\"",
+            batteryLevel = 1, timestamp = 0L
+        )
+        assertTrue(WebhookRequestBuilder.isValidJson(out))
+        assertTrue(out.contains("\\\"hi\\\""))
+    }
+
+    @Test
+    fun `renderTemplate keeps a newline from breaking the document`() {
+        val out = WebhookRequestBuilder.renderTemplate(
+            template = """{"m":"{{message}}"}""",
+            title = "", message = "a\nb", deviceName = "",
+            batteryLevel = 1, timestamp = 0L
+        )
+        assertTrue(WebhookRequestBuilder.isValidJson(out))
+        assertTrue(out.contains("\\n"))
+    }
+
+    @Test
+    fun `renderTemplate leaves unknown placeholders untouched`() {
+        val out = WebhookRequestBuilder.renderTemplate(
+            template = """{"x":"{{unknown}}"}""",
+            title = "t", message = "m", deviceName = "d",
+            batteryLevel = 1, timestamp = 0L
+        )
+        assertTrue(out.contains("{{unknown}}"))
+    }
+
+    // --------------------------------------------------------- json validation
+
+    @Test
+    fun `isValidJson accepts well formed documents`() {
+        assertTrue(WebhookRequestBuilder.isValidJson("""{"a":1}"""))
+        assertTrue(WebhookRequestBuilder.isValidJson("""{"a":"b","c":true,"d":null}"""))
+        assertTrue(WebhookRequestBuilder.isValidJson("""[1,2,3]"""))
+        assertTrue(WebhookRequestBuilder.isValidJson("""{"nested":{"x":[1,{"y":"z"}]}}"""))
+        assertTrue(WebhookRequestBuilder.isValidJson("\"just a string\""))
+    }
+
+    @Test
+    fun `isValidJson rejects malformed documents`() {
+        assertFalse(WebhookRequestBuilder.isValidJson(""))
+        assertFalse(WebhookRequestBuilder.isValidJson("   "))
+        assertFalse(WebhookRequestBuilder.isValidJson("""{"a":}"""))
+        assertFalse(WebhookRequestBuilder.isValidJson("""{"a":1"""))
+        assertFalse(WebhookRequestBuilder.isValidJson("""{"a" 1}"""))
+        assertFalse(WebhookRequestBuilder.isValidJson("""{"a":"unterminated}"""))
+        assertFalse(WebhookRequestBuilder.isValidJson("""{"a":1} trailing"""))
+        assertFalse(WebhookRequestBuilder.isValidJson("not json at all"))
+    }
+
+    @Test
+    fun `isValidJson handles escaped quotes inside strings`() {
+        assertTrue(WebhookRequestBuilder.isValidJson("""{"a":"say \"hi\""}"""))
+        assertTrue(WebhookRequestBuilder.isValidJson("""{"a":"back\\slash"}"""))
     }
 
     // ------------------------------------------------------------------ methods
@@ -159,7 +310,9 @@ class WebhookRequestBuilderTest {
     fun `GET produces no body`() {
         val spec = WebhookRequestBuilder.build(
             url = "https://example.com/hook",
-            method = "GET", rawHeaders = "",
+            service = WebhookRequestBuilder.SERVICE_AUTO,
+            method = "GET", rawHeaders = "", customBody = "",
+            barkSound = "", barkLevel = "",
             title = "t", message = "m", deviceName = "d",
             batteryLevel = 1, timestamp = 0L
         )
