@@ -37,6 +37,8 @@ object RemoteNotifier {
         deviceName: String,
         batteryLevel: Int,
         isTest: Boolean = false,
+        method: String = "POST",
+        headers: String = "",
         onResult: (Boolean, String) -> Unit
     ) {
         val formattedUrl = normalizeUrl(webhookUrl)
@@ -55,7 +57,7 @@ object RemoteNotifier {
         }
 
         val request = try {
-            buildRequest(formattedUrl, title, message, deviceName, batteryLevel)
+            buildRequest(formattedUrl, method, headers, title, message, deviceName, batteryLevel)
         } catch (e: Exception) {
             val errorMsg = "推送失败: URL 格式无效 (${e.localizedMessage})"
             LogRepository.addLog(errorMsg, isError = true, isPushEvent = true)
@@ -85,60 +87,49 @@ object RemoteNotifier {
         })
     }
 
+    /**
+     * Assembles the OkHttp request from a [WebhookRequestBuilder.Spec].
+     *
+     * The JSON is produced by JSONObject rather than string interpolation so that a
+     * device name containing a quote, backslash or newline cannot corrupt the
+     * payload - the old code did exactly that and the receiver saw a parse error.
+     */
     private fun buildRequest(
         url: String,
+        method: String,
+        headers: String,
         title: String,
         message: String,
         deviceName: String,
         batteryLevel: Int
     ): Request {
-        return when {
-            // Telegram Bot API
-            url.contains("api.telegram.org/bot", ignoreCase = true) -> {
-                val json = """
-                    {
-                        "text": "$title\n$message"
-                    }
-                """.trimIndent()
-                Request.Builder()
-                    .url(url)
-                    .post(json.toRequestBody(JSON_MEDIA_TYPE))
-                    .build()
-            }
+        val spec = WebhookRequestBuilder.build(
+            url = url,
+            method = method,
+            rawHeaders = headers,
+            title = title,
+            message = message,
+            deviceName = deviceName,
+            batteryLevel = batteryLevel,
+            timestamp = System.currentTimeMillis()
+        )
 
-            // Bark App Push
-            url.contains("day.app", ignoreCase = true) -> {
-                val json = """
-                    {
-                        "title": "$title",
-                        "body": "$message",
-                        "device": "$deviceName",
-                        "group": "BatteryDetector"
-                    }
-                """.trimIndent()
-                Request.Builder()
-                    .url(url)
-                    .post(json.toRequestBody(JSON_MEDIA_TYPE))
-                    .build()
-            }
+        val mediaType = WebhookRequestBuilder.contentTypeFor(spec.method)?.toMediaType()
+        val body = spec.body?.toRequestBody(mediaType)
 
-            // 通用 Webhook / Gotify / ServerChan / 自建服务
-            else -> {
-                val json = """
-                    {
-                        "title": "$title",
-                        "text": "$message",
-                        "message": "$message",
-                        "device": "$deviceName",
-                        "battery": $batteryLevel,
-                        "timestamp": ${System.currentTimeMillis()}
-                    }
-                """.trimIndent()
-                Request.Builder()
-                    .url(url)
-                    .post(json.toRequestBody(JSON_MEDIA_TYPE))
-                    .build()
+        val builder = Request.Builder().url(url)
+        spec.extraHeaders.forEach { (name, value) -> builder.addHeader(name, value) }
+
+        when (spec.method) {
+            "GET" -> builder.get()
+            "HEAD" -> builder.head()
+            "DELETE" -> {
+                if (body != null) builder.delete(body) else builder.delete()
             }
+            "PUT" -> builder.put(body ?: ByteArray(0).toRequestBody(null))
+            "PATCH" -> builder.patch(body ?: ByteArray(0).toRequestBody(null))
+            else -> builder.post(body ?: ByteArray(0).toRequestBody(null))
         }
+        return builder.build()
     }
 }

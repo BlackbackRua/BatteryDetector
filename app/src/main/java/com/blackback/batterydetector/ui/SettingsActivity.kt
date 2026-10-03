@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -24,6 +25,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -32,6 +35,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SuggestionChip
@@ -125,10 +129,153 @@ class SettingsActivity : ComponentActivity() {
     }
 }
 
+/**
+ * The delivery routes offered by the push picker, in display order.
+ *
+ * Declared once so the dropdown, its labels and the description text cannot drift
+ * apart from the identifiers stored in preferences.
+ */
+private val PUSH_OPTIONS = listOf(
+    AppPreferences.PUSH_LAN to "局域网广播",
+    AppPreferences.PUSH_WEBHOOK to "Webhook 推送",
+    AppPreferences.PUSH_EMAIL to "邮件推送",
+    AppPreferences.PUSH_NONE to "不推送"
+)
+
+private fun pushMethodLabel(value: String): String =
+    PUSH_OPTIONS.firstOrNull { it.first == value }?.second ?: "局域网广播"
+
+/**
+ * Sends one alert over whichever route is currently selected.
+ *
+ * Extracted from the settings screen so it can sit at the bottom of the push card,
+ * next to the settings it exercises, rather than far below them in the self-test
+ * section. Keeping it a composable with explicit parameters avoids a second copy of
+ * this logic drifting away from the first.
+ */
+@Composable
+private fun TestAlertButton(
+    pushMethod: String,
+    webhookUrl: String,
+    webhookMethod: String,
+    webhookHeaders: String,
+    deviceName: String,
+    batteryLevel: Int,
+    lanPortStr: String,
+    enabled: Boolean,
+    onSendingChanged: (Boolean) -> Unit,
+    onFailure: (String) -> Unit,
+    onInfo: (String) -> Unit
+) {
+    val context = LocalContext.current
+    val prefs = remember { AppPreferences(context) }
+    val scope = rememberCoroutineScope()
+
+    Button(
+        onClick = {
+            val port = lanPortStr.toIntOrNull() ?: 18888
+
+            // Validate the selected route first, so the message names the thing
+            // the user has to fix instead of failing later with a network error.
+            when (pushMethod) {
+                AppPreferences.PUSH_WEBHOOK ->
+                    if (webhookUrl.trim().isEmpty()) {
+                        onFailure("请先填写 Webhook 地址。")
+                        return@Button
+                    }
+                AppPreferences.PUSH_EMAIL ->
+                    if (SmtpMailer.configFrom(prefs) == null) {
+                        onFailure("邮件未配置完整：需要 SMTP 服务器、发信账号、授权码和收件人。")
+                        return@Button
+                    }
+                AppPreferences.PUSH_NONE ->
+                    onInfo("当前推送方式为「不推送」，仅本机弹出通知")
+            }
+
+            onSendingChanged(true)
+
+            // The on-device notification is always shown, so the local rendering
+            // path is exercised whatever route is selected.
+            scope.launch {
+                LanSyncEngine.showLocalTestNotification(
+                    context = context,
+                    title = "BatteryDetector 测试推送",
+                    message = "设备 [$deviceName] 测试通知"
+                )
+            }
+
+            scope.launch {
+                var failure: String? = null
+
+                when (pushMethod) {
+                    AppPreferences.PUSH_WEBHOOK -> {
+                        val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                            RemoteNotifier.sendNotification(
+                                webhookUrl = webhookUrl.trim(),
+                                deviceName = deviceName,
+                                batteryLevel = batteryLevel,
+                                isTest = true,
+                                method = webhookMethod,
+                                headers = webhookHeaders
+                            ) { success, msg ->
+                                if (!success) failure = msg
+                                if (cont.isActive) cont.resume(success)
+                            }
+                        }
+                        if (ok) onInfo("Webhook 测试已发送")
+                    }
+
+                    AppPreferences.PUSH_EMAIL -> {
+                        val config = SmtpMailer.configFrom(prefs)
+                        val result = if (config == null) {
+                            SmtpMailer.Result(false, "邮件未配置完整")
+                        } else {
+                            withContext(Dispatchers.IO) {
+                                SmtpMailer.send(
+                                    config = config,
+                                    subject = "BatteryDetector 测试推送",
+                                    body = "设备 [$deviceName] 邮件推送测试，当前电量 $batteryLevel%。"
+                                )
+                            }
+                        }
+                        LogRepository.addLog("[邮件] ${result.message}", isError = !result.success)
+                        if (result.success) onInfo("测试邮件已发送") else failure = result.message
+                    }
+
+                    AppPreferences.PUSH_NONE -> Unit
+
+                    else -> {
+                        val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                            LanSyncEngine.sendUdpBroadcast(
+                                context = context,
+                                port = port,
+                                deviceName = deviceName,
+                                batteryLevel = batteryLevel,
+                                message = "局域网广播测试消息",
+                                isTest = true
+                            ) { success, msg ->
+                                if (!success) failure = "局域网广播：$msg"
+                                if (cont.isActive) cont.resume(success)
+                            }
+                        }
+                        if (ok) onInfo("局域网广播测试已发送")
+                    }
+                }
+
+                onSendingChanged(false)
+                failure?.let { onFailure(it) }
+            }
+        },
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(if (enabled) "发送测试预警" else "发送中...", fontSize = 13.sp)
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {
-    val context = LocalContext.current
+fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
     val prefs = remember { AppPreferences(context) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -139,6 +286,10 @@ fun SettingsScreen(onBack: () -> Unit) {
     var lanPortStr by remember { mutableStateOf(prefs.lanPort.toString()) }
     var enableLanBroadcast by remember { mutableStateOf(prefs.enableLanBroadcast) }
     var webhookUrl by remember { mutableStateOf(prefs.webhookUrl) }
+    var webhookMethod by remember { mutableStateOf(prefs.webhookMethod) }
+    var webhookHeaders by remember { mutableStateOf(prefs.webhookHeaders) }
+    var pushMethod by remember { mutableStateOf(prefs.pushMethod) }
+    var pushMenuExpanded by remember { mutableStateOf(false) }
     var smtpHost by remember { mutableStateOf(prefs.smtpHost) }
     var smtpPortStr by remember { mutableStateOf(prefs.smtpPort.toString()) }
     var smtpUser by remember { mutableStateOf(prefs.smtpUsername) }
@@ -174,37 +325,16 @@ fun SettingsScreen(onBack: () -> Unit) {
         }
     }
 
+    /**
+     * Opens the app's notification settings page.
+     *
+     * Deliberately the app-level page rather than the per-channel one: this button
+     * is labelled as the app's notification settings, and the user needs to reach
+     * every channel (alerts, the foreground service notification, live updates) from
+     * one place. The channel page also required the channel to already exist, which
+     * is what produced a blank screen on ColorOS before the channel was created.
+     */
     fun openNotificationSettings() {
-        // The per-channel page needs the channel to exist. It is otherwise only
-        // created once the receiver starts or a test notification is sent, so on a
-        // fresh install this button used to open a blank screen on ColorOS: that
-        // skin does not validate the channel id and launches the activity anyway.
-        LanSyncEngine.ensureNotificationChannel(context)
-
-        val channelExists = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val manager = context.getSystemService(android.app.NotificationManager::class.java)
-            manager?.getNotificationChannel(LanSyncEngine.CHANNEL_ID) != null
-        } else {
-            // Channels do not exist below API 26; the channel page is meaningless
-            // there, so fall through to the app-level page.
-            false
-        }
-
-        // Only open the channel page when there is really a channel behind it.
-        // Otherwise the app-level page is used, which always has content.
-        if (channelExists) {
-            try {
-                val intent = Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
-                    putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, LanSyncEngine.CHANNEL_ID)
-                }
-                context.startActivity(intent)
-                return
-            } catch (_: Exception) {
-                // Fall through to the app-level page below.
-            }
-        }
-
         try {
             val intent = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
                 putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
@@ -491,123 +621,6 @@ fun SettingsScreen(onBack: () -> Unit) {
                             }
                         )
                     }
-
-                    Button(
-                        onClick = {
-                            val trimmedWebhook = webhookUrl.trim()
-                            val mailConfig = SmtpMailer.configFrom(prefs)
-                            if (!enableLanBroadcast && trimmedWebhook.isEmpty() && mailConfig == null) {
-                                errorDialogMessage =
-                                    "发送失败：未配置 Webhook、邮件推送，且未开启局域网广播。"
-                                return@Button
-                            }
-
-                            isSendingTestPush = true
-                            val port = lanPortStr.toIntOrNull() ?: 18888
-                            val level = latestInfoState?.level ?: 88
-
-                            // Always show the on-device notification so the local
-                            // rendering path is exercised too.
-                            coroutineScope.launch {
-                                LanSyncEngine.showLocalTestNotification(
-                                    context = context,
-                                    title = "BatteryDetector 测试推送",
-                                    message = "设备 [$deviceName] 测试通知"
-                                )
-                            }
-
-                            // Every configured channel is exercised, and the
-                            // outcomes are collected so one failure does not hide the
-                            // others - the previous if/else meant a configured
-                            // Webhook skipped the LAN test entirely.
-                            coroutineScope.launch {
-                                val failures = mutableListOf<String>()
-
-                                if (trimmedWebhook.isNotEmpty()) {
-                                    val ok = suspendCancellableCoroutine<Boolean> { cont ->
-                                        RemoteNotifier.sendNotification(
-                                            webhookUrl = trimmedWebhook,
-                                            deviceName = deviceName,
-                                            batteryLevel = level,
-                                            isTest = true
-                                        ) { success, msg ->
-                                            if (!success) failures += msg
-                                            if (cont.isActive) cont.resume(success)
-                                        }
-                                    }
-                                    if (ok) Toast.makeText(context, "Webhook 测试已发送", Toast.LENGTH_SHORT).show()
-                                }
-
-                                if (mailConfig != null) {
-                                    val result = withContext(Dispatchers.IO) {
-                                        SmtpMailer.send(
-                                            config = mailConfig,
-                                            subject = "BatteryDetector 测试推送",
-                                            body = "设备 [$deviceName] 邮件推送测试，当前电量 $level%。"
-                                        )
-                                    }
-                                    LogRepository.addLog(
-                                        "[邮件] ${result.message}",
-                                        isError = !result.success
-                                    )
-                                    if (result.success) {
-                                        Toast.makeText(context, "测试邮件已发送", Toast.LENGTH_SHORT).show()
-                                    } else {
-                                        failures += result.message
-                                    }
-                                }
-
-                                if (enableLanBroadcast) {
-                                    val ok = suspendCancellableCoroutine<Boolean> { cont ->
-                                        LanSyncEngine.sendUdpBroadcast(
-                                            context = context,
-                                            port = port,
-                                            deviceName = deviceName,
-                                            batteryLevel = level,
-                                            message = "局域网广播测试消息",
-                                            isTest = true
-                                        ) { success, msg ->
-                                            if (!success) failures += "局域网广播：$msg"
-                                            if (cont.isActive) cont.resume(success)
-                                        }
-                                    }
-                                    if (ok) Toast.makeText(context, "局域网广播测试已发送", Toast.LENGTH_SHORT).show()
-                                }
-
-                                isSendingTestPush = false
-                                if (failures.isNotEmpty()) {
-                                    errorDialogMessage = failures.joinToString("\n\n")
-                                }
-                            }
-                        },
-                        enabled = !isSendingTestPush,
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text(if (isSendingTestPush) "发送中..." else "发送测试预警（本机）", fontSize = 13.sp)
-                    }
-
-                    Button(
-                        onClick = {
-                            val port = lanPortStr.toIntOrNull() ?: 18888
-                            LanSyncEngine.sendUdpBroadcast(
-                                context = context,
-                                port = port,
-                                deviceName = "$deviceName (本机测试)",
-                                batteryLevel = 12,
-                                message = "接收方局域网同步测试",
-                                isTest = true
-                            ) { success, msg ->
-                                if (success) {
-                                    Toast.makeText(context, "已发送局域网同步测试数据", Toast.LENGTH_SHORT).show()
-                                } else {
-                                    errorDialogMessage = "局域网测试同步发送失败:\n$msg"
-                                }
-                            }
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Text("广播低电量提醒到局域网设备", fontSize = 13.sp)
-                    }
                 }
             }
 
@@ -624,47 +637,124 @@ fun SettingsScreen(onBack: () -> Unit) {
                             color = MaterialTheme.colorScheme.primary
                         )
 
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "局域网 UDP 广播同步", fontWeight = FontWeight.Medium)
+                        // Delivery route picker. One explicit choice replaces the
+                        // previous layout, where every channel's fields were on
+                        // screen at once and it was unclear which ones would fire.
+                        Box {
+                            OutlinedButton(
+                                onClick = { pushMenuExpanded = true },
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
                                 Text(
-                                    text = "自动向局域网内所有接收方设备广播低电量预警；" +
-                                        "若关闭则需手动配置下方的推送地址。",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.outline
+                                    text = pushMethodLabel(pushMethod),
+                                    modifier = Modifier.weight(1f),
+                                    fontSize = 13.sp
                                 )
+                                Text("▾", fontSize = 13.sp)
                             }
-                            Switch(
-                                checked = enableLanBroadcast,
-                                onCheckedChange = {
-                                    enableLanBroadcast = it
-                                    prefs.enableLanBroadcast = it
+                            DropdownMenu(
+                                expanded = pushMenuExpanded,
+                                onDismissRequest = { pushMenuExpanded = false },
+                                modifier = Modifier.fillMaxWidth(0.92f)
+                            ) {
+                                PUSH_OPTIONS.forEach { (value, label) ->
+                                    DropdownMenuItem(
+                                        text = { Text(label, fontSize = 13.sp) },
+                                        trailingIcon = {
+                                            RadioButton(
+                                                selected = pushMethod == value,
+                                                onClick = null
+                                            )
+                                        },
+                                        onClick = {
+                                            pushMethod = value
+                                            prefs.pushMethod = value
+                                            // Keep the legacy LAN flag in step, so
+                                            // anything still reading it agrees.
+                                            prefs.enableLanBroadcast = value == AppPreferences.PUSH_LAN
+                                            enableLanBroadcast = value == AppPreferences.PUSH_LAN
+                                            pushMenuExpanded = false
+                                        }
+                                    )
                                 }
-                            )
+                            }
                         }
 
-                        // The webhook only matters when the LAN route is off, so the
-                        // field is hidden while broadcasting is enabled rather than
-                        // sitting there looking like a required setting.
-                        if (!enableLanBroadcast) {
+                        Text(
+                            text = when (pushMethod) {
+                                AppPreferences.PUSH_WEBHOOK ->
+                                    "预警会 POST 到下方地址。按 URL 自动匹配 Bark / Telegram 格式，其他地址使用通用 JSON。"
+                                AppPreferences.PUSH_EMAIL ->
+                                    "预警通过 SMTP 发送到邮箱，使用隐式 TLS（465 端口）。"
+                                AppPreferences.PUSH_NONE ->
+                                    "不发送任何推送，预警只记录在应用日志中。"
+                                else ->
+                                    "预警广播到同一 Wi-Fi 下的接收方设备。"
+                            },
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+
+                        if (pushMethod == AppPreferences.PUSH_WEBHOOK) {
                             OutlinedTextField(
                                 value = webhookUrl,
                                 onValueChange = {
                                     webhookUrl = it
                                     prefs.webhookUrl = it
                                 },
-                                label = { Text("外网/指定 HTTP Webhook 地址") },
-                                placeholder = { Text("Bark / Telegram / Gotify / 局域网接收方 IP") },
+                                label = { Text("Webhook 地址") },
+                                placeholder = { Text("https://... 或 局域网接收方 IP") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true
                             )
 
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                OutlinedTextField(
+                                    value = webhookMethod,
+                                    onValueChange = {
+                                        webhookMethod = it
+                                        prefs.webhookMethod = it
+                                    },
+                                    label = { Text("请求方法") },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true
+                                )
+                                OutlinedTextField(
+                                    value = lanPortStr,
+                                    onValueChange = {
+                                        lanPortStr = it
+                                        it.toIntOrNull()?.let { port -> prefs.lanPort = port }
+                                    },
+                                    label = { Text("局域网端口") },
+                                    modifier = Modifier.weight(1f),
+                                    singleLine = true
+                                )
+                            }
+
+                            OutlinedTextField(
+                                value = webhookHeaders,
+                                onValueChange = {
+                                    webhookHeaders = it
+                                    prefs.webhookHeaders = it
+                                },
+                                label = { Text("自定义请求头（每行一个）") },
+                                placeholder = { Text("Authorization: Bearer xxx\nX-Api-Key: yyy") },
+                                modifier = Modifier.fillMaxWidth(),
+                                minLines = 2
+                            )
+
                             Text(
-                                text = "快捷填充 Webhook 示例:",
+                                text = "需要鉴权的服务在这里填 Authorization / X-Api-Key 等；" +
+                                    "以 # 开头的行会被忽略。GET / HEAD 不携带请求体。",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+
+                            Text(
+                                text = "快捷填充地址:",
                                 fontSize = 12.sp,
                                 color = MaterialTheme.colorScheme.outline
                             )
@@ -708,6 +798,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                         // ---------------- 邮件推送 (SMTP) ----------------
+                        if (pushMethod == AppPreferences.PUSH_EMAIL) {
                         Text(text = "邮件推送", fontWeight = FontWeight.Medium)
                         Text(
                             text = "将预警发到邮箱。固定使用隐式 TLS（465 端口）",
@@ -820,6 +911,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 fontSize = 12.sp
                             )
                         }
+                        }
 
                         Column {
                             Text(text = "后台检测间隔: $checkInterval 分钟", fontWeight = FontWeight.Medium)
@@ -892,6 +984,48 @@ fun SettingsScreen(onBack: () -> Unit) {
                                     }
                                 }
                             )
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                        // ---------------- 测试 ----------------
+                        // Both test actions live at the end of this card, beside the
+                        // settings they exercise.
+                        TestAlertButton(
+                            pushMethod = pushMethod,
+                            webhookUrl = webhookUrl,
+                            webhookMethod = webhookMethod,
+                            webhookHeaders = webhookHeaders,
+                            deviceName = deviceName,
+                            batteryLevel = latestInfoState?.level ?: 88,
+                            lanPortStr = lanPortStr,
+                            enabled = !isSendingTestPush,
+                            onSendingChanged = { isSendingTestPush = it },
+                            onFailure = { errorDialogMessage = it },
+                            onInfo = { Toast.makeText(context, it, Toast.LENGTH_SHORT).show() }
+                        )
+
+                        Button(
+                            onClick = {
+                                val port = lanPortStr.toIntOrNull() ?: 18888
+                                LanSyncEngine.sendUdpBroadcast(
+                                    context = context,
+                                    port = port,
+                                    deviceName = "$deviceName (本机测试)",
+                                    batteryLevel = 12,
+                                    message = "接收方局域网同步测试",
+                                    isTest = true
+                                ) { success, msg ->
+                                    if (success) {
+                                        Toast.makeText(context, "已发送局域网同步测试数据", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        errorDialogMessage = "局域网测试同步发送失败:\n$msg"
+                                    }
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("广播低电量提醒到局域网设备", fontSize = 13.sp)
                         }
                     }
                 }

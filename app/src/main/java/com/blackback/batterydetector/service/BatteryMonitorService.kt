@@ -148,19 +148,17 @@ class BatteryMonitorService : Service() {
     }
 
     /**
-     * Delivers a low-battery alert over every configured channel.
+     * Delivers a low-battery alert over the route chosen in settings.
      *
-     * The channels are independent: previously a configured Webhook suppressed the
-     * LAN broadcast entirely, because the branches were `if / else if`. That meant
-     * enabling one route silently disabled the other. Now each configured channel
-     * runs, and the alert counts as delivered if any of them succeeded.
+     * The route used to be implicit: every configured channel fired, with an
+     * `if / else if` that meant a configured Webhook silently suppressed the LAN
+     * broadcast. Picking one route explicitly removes both the surprise and the
+     * ambiguity about what is actually enabled.
      *
-     * Runs on a background dispatcher and blocks until every channel has reported,
-     * so the caller's "do not re-alert" flag is only cleared on a real failure.
+     * Runs on a background dispatcher and blocks until the channel reports, so the
+     * caller's "do not re-alert" flag is only set on a real success.
      */
     private suspend fun dispatchAlert(batteryLevel: Int, isTest: Boolean, onResult: (Boolean) -> Unit) {
-        val webhook = prefs.webhookUrl.trim()
-        val mailConfig = SmtpMailer.configFrom(prefs)
         val title = if (isTest) "BatteryDetector 测试推送" else "低电量预警"
         val message = if (isTest) {
             "设备 [${prefs.deviceName}] 当前电量为 $batteryLevel%，网络通知功能正常！"
@@ -168,56 +166,62 @@ class BatteryMonitorService : Service() {
             "警告：设备 [${prefs.deviceName}] 当前电量仅剩 $batteryLevel%，请及时充电！"
         }
 
-        var anyAttempt = false
-        var anySuccess = false
-
-        if (webhook.isNotEmpty()) {
-            anyAttempt = true
-            val ok = withContext(Dispatchers.IO) {
-                suspendCancellableCoroutine<Boolean> { cont ->
+        when (prefs.pushMethod) {
+            AppPreferences.PUSH_WEBHOOK -> {
+                val webhook = prefs.webhookUrl.trim()
+                if (webhook.isEmpty()) {
+                    LogRepository.addLog("推送方式为 Webhook，但地址未配置", isError = true)
+                    onResult(false)
+                    return
+                }
+                val ok = suspendCancellableCoroutine<Boolean> { cont ->
                     RemoteNotifier.sendNotification(
                         webhookUrl = webhook,
                         deviceName = prefs.deviceName,
                         batteryLevel = batteryLevel,
+                        isTest = isTest,
+                        method = prefs.webhookMethod,
+                        headers = prefs.webhookHeaders
+                    ) { success, _ -> if (cont.isActive) cont.resume(success) }
+                }
+                onResult(ok)
+            }
+
+            AppPreferences.PUSH_EMAIL -> {
+                val config = SmtpMailer.configFrom(prefs)
+                if (config == null) {
+                    LogRepository.addLog("推送方式为邮件，但 SMTP 未配置完整", isError = true)
+                    onResult(false)
+                    return
+                }
+                val result = withContext(Dispatchers.IO) { SmtpMailer.send(config, title, message) }
+                LogRepository.addLog(
+                    if (result.success) "邮件推送成功" else result.message,
+                    isError = !result.success,
+                    isPushEvent = result.success
+                )
+                onResult(result.success)
+            }
+
+            AppPreferences.PUSH_NONE -> {
+                LogRepository.addLog("推送方式已关闭，预警仅记录在日志中", isError = true)
+                onResult(false)
+            }
+
+            else -> {
+                val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                    LanSyncEngine.sendUdpBroadcast(
+                        context = this@BatteryMonitorService,
+                        port = prefs.lanPort,
+                        deviceName = prefs.deviceName,
+                        batteryLevel = batteryLevel,
+                        message = message,
                         isTest = isTest
                     ) { success, _ -> if (cont.isActive) cont.resume(success) }
                 }
+                onResult(ok)
             }
-            if (ok) anySuccess = true
         }
-
-        if (mailConfig != null) {
-            anyAttempt = true
-            val result = withContext(Dispatchers.IO) {
-                SmtpMailer.send(mailConfig, title, message)
-            }
-            LogRepository.addLog(
-                if (result.success) "邮件推送成功" else result.message,
-                isError = !result.success,
-                isPushEvent = result.success
-            )
-            if (result.success) anySuccess = true
-        }
-
-        if (prefs.enableLanBroadcast) {
-            anyAttempt = true
-            val ok = suspendCancellableCoroutine<Boolean> { cont ->
-                LanSyncEngine.sendUdpBroadcast(
-                    context = this@BatteryMonitorService,
-                    port = prefs.lanPort,
-                    deviceName = prefs.deviceName,
-                    batteryLevel = batteryLevel,
-                    message = message,
-                    isTest = isTest
-                ) { success, _ -> if (cont.isActive) cont.resume(success) }
-            }
-            if (ok) anySuccess = true
-        }
-
-        if (!anyAttempt) {
-            LogRepository.addLog("未配置任何推送通道，预警仅记录在日志中", isError = true)
-        }
-        onResult(anySuccess)
     }
 
     private fun updateNotification(contentText: String) {

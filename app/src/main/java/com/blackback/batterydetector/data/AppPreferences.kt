@@ -14,6 +14,32 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_WEBHOOK_URL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_WEBHOOK_URL, value).apply()
 
+    /** HTTP method for the webhook, validated by WebhookRequestBuilder. */
+    var webhookMethod: String
+        get() = prefs.getString(KEY_WEBHOOK_METHOD, "POST") ?: "POST"
+        set(value) = prefs.edit().putString(KEY_WEBHOOK_METHOD, value).apply()
+
+    /**
+     * Extra request headers, one `Name: Value` per line.
+     *
+     * Needed by services that authenticate with `Authorization` or an API-key
+     * header; without it those endpoints always answer 401.
+     */
+    var webhookHeaders: String
+        get() = prefs.getString(KEY_WEBHOOK_HEADERS, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_WEBHOOK_HEADERS, value).apply()
+
+    /**
+     * Which delivery route the alert uses.
+     *
+     * One of [PUSH_LAN], [PUSH_WEBHOOK], [PUSH_EMAIL], [PUSH_NONE]. A single choice
+     * keeps the settings screen understandable; previously every configured channel
+     * fired at once, which made it hard to tell what was actually enabled.
+     */
+    var pushMethod: String
+        get() = prefs.getString(KEY_PUSH_METHOD, PUSH_LAN) ?: PUSH_LAN
+        set(value) = prefs.edit().putString(KEY_PUSH_METHOD, value).apply()
+
     // --- SMTP / email alert route -------------------------------------------
     //
     // Empty by default: the mail route only becomes active once a host, account and
@@ -153,5 +179,14 @@ class AppPreferences(context: Context) {
         private const val KEY_SMTP_PASSWORD = "smtp_password"
         private const val KEY_SMTP_FROM = "smtp_from"
         private const val KEY_SMTP_TO = "smtp_to"
+        private const val KEY_WEBHOOK_METHOD = "webhook_method"
+        private const val KEY_WEBHOOK_HEADERS = "webhook_headers"
+        private const val KEY_PUSH_METHOD = "push_method"
+
+        /** Push route identifiers, also used as the stored preference values. */
+        const val PUSH_LAN = "LAN"
+        const val PUSH_WEBHOOK = "WEBHOOK"
+        const val PUSH_EMAIL = "EMAIL"
+        const val PUSH_NONE = "NONE"
     }
 }
