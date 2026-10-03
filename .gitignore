@@ -37,3 +37,10 @@ Thumbs.db
 # videos. Kept out so the repository holds source rather than test output.
 *.png
 *.mp4
+
+# The project icon is deliberate content, not scratch output.
+!icon.png
+!docs/icon.png
+
+# Scratch directory used while rendering the icon.
+.iconout/

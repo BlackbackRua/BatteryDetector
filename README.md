@@ -1,5 +1,7 @@
 # BatteryDetector
 
+<img src="icon.png" width="128" alt="BatteryDetector">
+
 一个 Android 电量监控应用。定时读取本机电量，在电量低于阈值时通过
 Webhook 或局域网广播发出预警；接收端设备会以系统通知的形式弹出告警。
 
