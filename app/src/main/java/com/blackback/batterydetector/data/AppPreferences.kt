@@ -3,6 +3,7 @@ package com.blackback.batterydetector.data
 import android.content.Context
 import android.content.SharedPreferences
 import android.os.Build
+import com.blackback.batterydetector.network.SmtpMailer
 
 class AppPreferences(context: Context) {
 
@@ -12,6 +13,37 @@ class AppPreferences(context: Context) {
     var webhookUrl: String
         get() = prefs.getString(KEY_WEBHOOK_URL, "") ?: ""
         set(value) = prefs.edit().putString(KEY_WEBHOOK_URL, value).apply()
+
+    // --- SMTP / email alert route -------------------------------------------
+    //
+    // Empty by default: the mail route only becomes active once a host, account and
+    // recipient are filled in, so upgrading users see no behaviour change.
+
+    var smtpHost: String
+        get() = prefs.getString(KEY_SMTP_HOST, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SMTP_HOST, value).apply()
+
+    var smtpPort: Int
+        get() = prefs.getInt(KEY_SMTP_PORT, SmtpMailer.DEFAULT_PORT)
+        set(value) = prefs.edit().putInt(KEY_SMTP_PORT, value).apply()
+
+    var smtpUsername: String
+        get() = prefs.getString(KEY_SMTP_USER, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SMTP_USER, value).apply()
+
+    /** Stored as plain text in app-private preferences; never leaves the device. */
+    var smtpPassword: String
+        get() = prefs.getString(KEY_SMTP_PASSWORD, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SMTP_PASSWORD, value).apply()
+
+    /** Falls back to the SMTP username when blank, which is the usual case. */
+    var smtpFrom: String
+        get() = prefs.getString(KEY_SMTP_FROM, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SMTP_FROM, value).apply()
+
+    var smtpTo: String
+        get() = prefs.getString(KEY_SMTP_TO, "") ?: ""
+        set(value) = prefs.edit().putString(KEY_SMTP_TO, value).apply()
 
     var deviceName: String
         get() = prefs.getString(KEY_DEVICE_NAME, Build.MODEL) ?: Build.MODEL
@@ -115,5 +147,11 @@ class AppPreferences(context: Context) {
         private const val KEY_HYPEROS_FOCUS_BYPASS = "hyperos_focus_bypass"
         private const val KEY_ENABLE_DEDUP = "enable_notification_dedup"
         private const val KEY_ENABLE_LIVE_UPDATE = "enable_live_update"
+        private const val KEY_SMTP_HOST = "smtp_host"
+        private const val KEY_SMTP_PORT = "smtp_port"
+        private const val KEY_SMTP_USER = "smtp_user"
+        private const val KEY_SMTP_PASSWORD = "smtp_password"
+        private const val KEY_SMTP_FROM = "smtp_from"
+        private const val KEY_SMTP_TO = "smtp_to"
     }
 }

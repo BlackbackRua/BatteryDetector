@@ -58,6 +58,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.blackback.batterydetector.R
@@ -65,6 +66,7 @@ import com.blackback.batterydetector.data.AppPreferences
 import com.blackback.batterydetector.data.LogRepository
 import com.blackback.batterydetector.network.LanSyncEngine
 import com.blackback.batterydetector.network.RemoteNotifier
+import com.blackback.batterydetector.network.SmtpMailer
 import com.blackback.batterydetector.root.RootBatteryManager
 import com.blackback.batterydetector.service.BatteryMonitorService
 import com.blackback.batterydetector.shizuku.HyperOsFocusNotification
@@ -73,7 +75,9 @@ import com.blackback.batterydetector.utils.ShizukuRunner
 import com.blackback.batterydetector.ui.theme.BatteryDetectorTheme
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 /**
  * Settings, as its own Activity.
@@ -135,6 +139,13 @@ fun SettingsScreen(onBack: () -> Unit) {
     var lanPortStr by remember { mutableStateOf(prefs.lanPort.toString()) }
     var enableLanBroadcast by remember { mutableStateOf(prefs.enableLanBroadcast) }
     var webhookUrl by remember { mutableStateOf(prefs.webhookUrl) }
+    var smtpHost by remember { mutableStateOf(prefs.smtpHost) }
+    var smtpPortStr by remember { mutableStateOf(prefs.smtpPort.toString()) }
+    var smtpUser by remember { mutableStateOf(prefs.smtpUsername) }
+    var smtpPassword by remember { mutableStateOf(prefs.smtpPassword) }
+    var smtpFrom by remember { mutableStateOf(prefs.smtpFrom) }
+    var smtpTo by remember { mutableStateOf(prefs.smtpTo) }
+    var isSendingTestMail by remember { mutableStateOf(false) }
     var lowThreshold by remember { mutableFloatStateOf(prefs.lowBatteryThreshold.toFloat()) }
     var checkInterval by remember { mutableIntStateOf(prefs.checkIntervalMinutes) }
     var useRootMode by remember { mutableStateOf(prefs.useRootMode) }
@@ -484,14 +495,19 @@ fun SettingsScreen(onBack: () -> Unit) {
                     Button(
                         onClick = {
                             val trimmedWebhook = webhookUrl.trim()
-                            if (!enableLanBroadcast && trimmedWebhook.isEmpty()) {
-                                errorDialogMessage = "发送失败：未配置 Webhook 推送地址，且未开启局域网广播。"
+                            val mailConfig = SmtpMailer.configFrom(prefs)
+                            if (!enableLanBroadcast && trimmedWebhook.isEmpty() && mailConfig == null) {
+                                errorDialogMessage =
+                                    "发送失败：未配置 Webhook、邮件推送，且未开启局域网广播。"
                                 return@Button
                             }
 
                             isSendingTestPush = true
                             val port = lanPortStr.toIntOrNull() ?: 18888
+                            val level = latestInfoState?.level ?: 88
 
+                            // Always show the on-device notification so the local
+                            // rendering path is exercised too.
                             coroutineScope.launch {
                                 LanSyncEngine.showLocalTestNotification(
                                     context = context,
@@ -500,46 +516,74 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 )
                             }
 
-                            if (trimmedWebhook.isNotEmpty()) {
-                                RemoteNotifier.sendNotification(
-                                    webhookUrl = trimmedWebhook,
-                                    deviceName = deviceName,
-                                    batteryLevel = latestInfoState?.level ?: 88,
-                                    isTest = true
-                                ) { success, msg ->
-                                    coroutineScope.launch(Dispatchers.Main) {
-                                        isSendingTestPush = false
-                                        if (success) {
-                                            Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            errorDialogMessage = msg
+                            // Every configured channel is exercised, and the
+                            // outcomes are collected so one failure does not hide the
+                            // others - the previous if/else meant a configured
+                            // Webhook skipped the LAN test entirely.
+                            coroutineScope.launch {
+                                val failures = mutableListOf<String>()
+
+                                if (trimmedWebhook.isNotEmpty()) {
+                                    val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                                        RemoteNotifier.sendNotification(
+                                            webhookUrl = trimmedWebhook,
+                                            deviceName = deviceName,
+                                            batteryLevel = level,
+                                            isTest = true
+                                        ) { success, msg ->
+                                            if (!success) failures += msg
+                                            if (cont.isActive) cont.resume(success)
                                         }
+                                    }
+                                    if (ok) Toast.makeText(context, "Webhook 测试已发送", Toast.LENGTH_SHORT).show()
+                                }
+
+                                if (mailConfig != null) {
+                                    val result = withContext(Dispatchers.IO) {
+                                        SmtpMailer.send(
+                                            config = mailConfig,
+                                            subject = "BatteryDetector 测试推送",
+                                            body = "设备 [$deviceName] 邮件推送测试，当前电量 $level%。"
+                                        )
+                                    }
+                                    LogRepository.addLog(
+                                        "[邮件] ${result.message}",
+                                        isError = !result.success
+                                    )
+                                    if (result.success) {
+                                        Toast.makeText(context, "测试邮件已发送", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        failures += result.message
                                     }
                                 }
-                            } else if (enableLanBroadcast) {
-                                LanSyncEngine.sendUdpBroadcast(
-                                    context = context,
-                                    port = port,
-                                    deviceName = deviceName,
-                                    batteryLevel = latestInfoState?.level ?: 88,
-                                    message = "局域网广播测试消息",
-                                    isTest = true
-                                ) { success, msg ->
-                                    coroutineScope.launch(Dispatchers.Main) {
-                                        isSendingTestPush = false
-                                        if (success) {
-                                            Toast.makeText(context, "局域网广播测试已发送", Toast.LENGTH_SHORT).show()
-                                        } else {
-                                            errorDialogMessage = "局域网广播发送失败:\n$msg"
+
+                                if (enableLanBroadcast) {
+                                    val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                                        LanSyncEngine.sendUdpBroadcast(
+                                            context = context,
+                                            port = port,
+                                            deviceName = deviceName,
+                                            batteryLevel = level,
+                                            message = "局域网广播测试消息",
+                                            isTest = true
+                                        ) { success, msg ->
+                                            if (!success) failures += "局域网广播：$msg"
+                                            if (cont.isActive) cont.resume(success)
                                         }
                                     }
+                                    if (ok) Toast.makeText(context, "局域网广播测试已发送", Toast.LENGTH_SHORT).show()
+                                }
+
+                                isSendingTestPush = false
+                                if (failures.isNotEmpty()) {
+                                    errorDialogMessage = failures.joinToString("\n\n")
                                 }
                             }
                         },
                         enabled = !isSendingTestPush,
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        Text(if (isSendingTestPush) "发送中..." else "广播测试预警到局域网设备", fontSize = 13.sp)
+                        Text(if (isSendingTestPush) "发送中..." else "发送测试预警（本机）", fontSize = 13.sp)
                     }
 
                     Button(
@@ -658,6 +702,122 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 },
                                 valueRange = 5f..40f,
                                 steps = 34
+                            )
+                        }
+
+                        HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+                        // ---------------- 邮件推送 (SMTP) ----------------
+                        Text(text = "邮件推送", fontWeight = FontWeight.Medium)
+                        Text(
+                            text = "将预警发到邮箱。固定使用隐式 TLS（465 端口）",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.outline
+                        )
+
+                        OutlinedTextField(
+                            value = smtpHost,
+                            onValueChange = {
+                                smtpHost = it
+                                prefs.smtpHost = it
+                            },
+                            label = { Text("SMTP 服务器") },
+                            placeholder = { Text("smtp.example.com") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = smtpPortStr,
+                            onValueChange = {
+                                smtpPortStr = it
+                                it.toIntOrNull()?.let { port -> prefs.smtpPort = port }
+                            },
+                            label = { Text("端口") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = smtpUser,
+                            onValueChange = {
+                                smtpUser = it
+                                prefs.smtpUsername = it
+                            },
+                            label = { Text("发信账号") },
+                            placeholder = { Text("Username@example.com") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = smtpPassword,
+                            onValueChange = {
+                                smtpPassword = it
+                                prefs.smtpPassword = it
+                            },
+                            label = { Text("授权码") },
+                            visualTransformation = PasswordVisualTransformation(),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = smtpFrom,
+                            onValueChange = {
+                                smtpFrom = it
+                                prefs.smtpFrom = it
+                            },
+                            label = { Text("发件人") },
+                            placeholder = { Text("使用发件人账号") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        OutlinedTextField(
+                            value = smtpTo,
+                            onValueChange = {
+                                smtpTo = it
+                                prefs.smtpTo = it
+                            },
+                            label = { Text("收件人") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true
+                        )
+
+                        OutlinedButton(
+                            onClick = {
+                                val config = SmtpMailer.configFrom(prefs)
+                                if (config == null) {
+                                    errorDialogMessage =
+                                        "邮件未配置完整：需要填写 SMTP 服务器、发信账号、授权码和收件人。"
+                                    return@OutlinedButton
+                                }
+                                isSendingTestMail = true
+                                coroutineScope.launch {
+                                    val result = withContext(Dispatchers.IO) {
+                                        SmtpMailer.send(
+                                            config = config,
+                                            subject = "BatteryDetector 邮件测试",
+                                            body = "设备 [${prefs.deviceName}] 邮件推送配置正常。"
+                                        )
+                                    }
+                                    isSendingTestMail = false
+                                    if (result.success) {
+                                        Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
+                                        LogRepository.addLog("[邮件] ${result.message}")
+                                    } else {
+                                        errorDialogMessage = result.message
+                                        LogRepository.addLog("[邮件] ${result.message}", isError = true)
+                                    }
+                                }
+                            },
+                            enabled = !isSendingTestMail,
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(
+                                if (isSendingTestMail) "发送中..." else "发送测试邮件",
+                                fontSize = 12.sp
                             )
                         }
 

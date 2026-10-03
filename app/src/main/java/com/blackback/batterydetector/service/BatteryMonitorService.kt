@@ -17,6 +17,7 @@ import com.blackback.batterydetector.data.BatteryInfo
 import com.blackback.batterydetector.data.LogRepository
 import com.blackback.batterydetector.network.LanSyncEngine
 import com.blackback.batterydetector.network.RemoteNotifier
+import com.blackback.batterydetector.network.SmtpMailer
 import com.blackback.batterydetector.root.RootBatteryManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -29,6 +30,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlin.coroutines.resume
 
 class BatteryMonitorService : Service() {
 
@@ -99,7 +103,13 @@ class BatteryMonitorService : Service() {
         }
     }
 
-    fun performBatteryCheck() {
+    /**
+     * Reads the battery and fires an alert when it is low.
+     *
+     * Suspending because alert delivery waits for every configured channel to
+     * report back before deciding whether the cooldown flag may be set.
+     */
+    suspend fun performBatteryCheck() {
         val batteryInfo = if (prefs.useRootMode) {
             RootBatteryManager.getBatteryInfoViaRoot()
                 ?: RootBatteryManager.getBatteryInfoViaStandardApi(this)
@@ -128,34 +138,86 @@ class BatteryMonitorService : Service() {
         } else if (batteryInfo.level <= threshold) {
             if (!prefs.hasNotifiedLowBattery) {
                 LogRepository.addLog("触发低电量预警 (当前 ${batteryInfo.level}% <= 设定 ${threshold}%)，准备推送通知...", isError = true)
-                
-                val webhook = prefs.webhookUrl.trim()
-                if (webhook.isNotEmpty()) {
-                    // 优先通过配置的 Webhook 通报
-                    RemoteNotifier.sendNotification(
-                        webhookUrl = webhook,
-                        deviceName = prefs.deviceName,
-                        batteryLevel = batteryInfo.level,
-                        isTest = false
-                    ) { success, _ ->
-                        if (success) prefs.hasNotifiedLowBattery = true
-                    }
-                } else if (prefs.enableLanBroadcast) {
-                    // Webhook 未配置时自动退回局域网广播
-                    LanSyncEngine.sendUdpBroadcast(
-                        context = this@BatteryMonitorService,
-                        port = prefs.lanPort,
-                        deviceName = prefs.deviceName,
-                        batteryLevel = batteryInfo.level,
-                        message = "警告：设备 [${prefs.deviceName}] 当前电量仅剩 ${batteryInfo.level}%，请及时充电！"
-                    ) { success, _ ->
-                        if (success) prefs.hasNotifiedLowBattery = true
-                    }
+                dispatchAlert(batteryInfo.level, isTest = false) { success ->
+                    if (success) prefs.hasNotifiedLowBattery = true
                 }
             } else {
                 LogRepository.addLog("电量持续偏低 (${batteryInfo.level}%)，已处于推送冷却状态")
             }
         }
+    }
+
+    /**
+     * Delivers a low-battery alert over every configured channel.
+     *
+     * The channels are independent: previously a configured Webhook suppressed the
+     * LAN broadcast entirely, because the branches were `if / else if`. That meant
+     * enabling one route silently disabled the other. Now each configured channel
+     * runs, and the alert counts as delivered if any of them succeeded.
+     *
+     * Runs on a background dispatcher and blocks until every channel has reported,
+     * so the caller's "do not re-alert" flag is only cleared on a real failure.
+     */
+    private suspend fun dispatchAlert(batteryLevel: Int, isTest: Boolean, onResult: (Boolean) -> Unit) {
+        val webhook = prefs.webhookUrl.trim()
+        val mailConfig = SmtpMailer.configFrom(prefs)
+        val title = if (isTest) "BatteryDetector 测试推送" else "低电量预警"
+        val message = if (isTest) {
+            "设备 [${prefs.deviceName}] 当前电量为 $batteryLevel%，网络通知功能正常！"
+        } else {
+            "警告：设备 [${prefs.deviceName}] 当前电量仅剩 $batteryLevel%，请及时充电！"
+        }
+
+        var anyAttempt = false
+        var anySuccess = false
+
+        if (webhook.isNotEmpty()) {
+            anyAttempt = true
+            val ok = withContext(Dispatchers.IO) {
+                suspendCancellableCoroutine<Boolean> { cont ->
+                    RemoteNotifier.sendNotification(
+                        webhookUrl = webhook,
+                        deviceName = prefs.deviceName,
+                        batteryLevel = batteryLevel,
+                        isTest = isTest
+                    ) { success, _ -> if (cont.isActive) cont.resume(success) }
+                }
+            }
+            if (ok) anySuccess = true
+        }
+
+        if (mailConfig != null) {
+            anyAttempt = true
+            val result = withContext(Dispatchers.IO) {
+                SmtpMailer.send(mailConfig, title, message)
+            }
+            LogRepository.addLog(
+                if (result.success) "邮件推送成功" else result.message,
+                isError = !result.success,
+                isPushEvent = result.success
+            )
+            if (result.success) anySuccess = true
+        }
+
+        if (prefs.enableLanBroadcast) {
+            anyAttempt = true
+            val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                LanSyncEngine.sendUdpBroadcast(
+                    context = this@BatteryMonitorService,
+                    port = prefs.lanPort,
+                    deviceName = prefs.deviceName,
+                    batteryLevel = batteryLevel,
+                    message = message,
+                    isTest = isTest
+                ) { success, _ -> if (cont.isActive) cont.resume(success) }
+            }
+            if (ok) anySuccess = true
+        }
+
+        if (!anyAttempt) {
+            LogRepository.addLog("未配置任何推送通道，预警仅记录在日志中", isError = true)
+        }
+        onResult(anySuccess)
     }
 
     private fun updateNotification(contentText: String) {
