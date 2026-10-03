@@ -68,6 +68,8 @@ fun BatteryDashboardScreen() {
     var localIpAddress by remember { mutableStateOf("获取中...") }
     var lastRefreshTimeStr by remember { mutableStateOf("未刷新") }
     var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
+    var isCheckingRoot by remember { mutableStateOf(false) }
+    var errorDialogMessage by remember { mutableStateOf<String?>(null) }
 
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
@@ -137,6 +139,20 @@ fun BatteryDashboardScreen() {
             dismissButton = {
                 TextButton(onClick = { showBatteryOptimizationPrompt = false }) {
                     Text("稍后再说")
+                }
+            }
+        )
+    }
+
+    // Failure feedback for the Root switch, which cannot succeed silently.
+    errorDialogMessage?.let { msg ->
+        AlertDialog(
+            onDismissRequest = { errorDialogMessage = null },
+            title = { Text("操作失败", fontWeight = FontWeight.Bold) },
+            text = { Text(text = msg, fontSize = 14.sp, lineHeight = 20.sp) },
+            confirmButton = {
+                TextButton(onClick = { errorDialogMessage = null }) {
+                    Text("知道了")
                 }
             }
         )
@@ -291,6 +307,69 @@ fun BatteryDashboardScreen() {
                                 }
                             }
                         )
+                    }
+
+                    // Root 模式。Turning it on proves su works first; leaving the
+                    // switch on when it does not would silently fall back to the
+                    // standard API on every read anyway.
+                    //
+                    // Shown only where it does something: a receiver never runs the
+                    // battery check loop, and with the service off nothing is reading
+                    // the battery at all.
+                    if (isServiceRunning && deviceRole == AppPreferences.ROLE_SENDER) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = "优先使用 Root 模式", fontWeight = FontWeight.Medium)
+                            Text(
+                                text = "通过 su 读取 /sys/class/.../capacity 核心节点",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                        Switch(
+                            checked = useRootMode,
+                            enabled = !isCheckingRoot,
+                            onCheckedChange = { wantsRoot ->
+                                if (!wantsRoot) {
+                                    useRootMode = false
+                                    prefs.useRootMode = false
+                                    return@Switch
+                                }
+                                isCheckingRoot = true
+                                coroutineScope.launch {
+                                    val hasRoot = withContext(Dispatchers.IO) {
+                                        RootBatteryManager.checkRootAccess()
+                                    }
+                                    isCheckingRoot = false
+                                    if (hasRoot) {
+                                        useRootMode = true
+                                        prefs.useRootMode = true
+                                        Toast.makeText(
+                                            context,
+                                            "Root 权限可用 (uid=0)，已切换为 Root 模式",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        LogRepository.addLog("Root 权限检测通过，已开启 Root 模式")
+                                        // Re-read immediately so the card above
+                                        // reflects the new source.
+                                        refreshBatteryInfo()
+                                    } else {
+                                        useRootMode = false
+                                        prefs.useRootMode = false
+                                        errorDialogMessage =
+                                            "无法获取 Root 权限，已保持关闭。\n\n" +
+                                                "请确认设备已 Root，并在 Root 管理软件" +
+                                                "（Magisk / APatch / KernelSU）中为本应用授权。"
+                                        LogRepository.addLog("Root 权限检测失败，已保持关闭", isError = true)
+                                    }
+                                }
+                            }
+                        )
+                    }
                     }
 
                     Button(

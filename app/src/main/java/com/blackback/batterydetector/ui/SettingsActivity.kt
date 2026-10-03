@@ -71,7 +71,6 @@ import com.blackback.batterydetector.data.LogRepository
 import com.blackback.batterydetector.network.LanSyncEngine
 import com.blackback.batterydetector.network.RemoteNotifier
 import com.blackback.batterydetector.network.SmtpMailer
-import com.blackback.batterydetector.root.RootBatteryManager
 import com.blackback.batterydetector.service.BatteryMonitorService
 import com.blackback.batterydetector.shizuku.HyperOsFocusNotification
 import com.blackback.batterydetector.utils.OemBatteryOptimizationHelper
@@ -299,13 +298,11 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
     var isSendingTestMail by remember { mutableStateOf(false) }
     var lowThreshold by remember { mutableFloatStateOf(prefs.lowBatteryThreshold.toFloat()) }
     var checkInterval by remember { mutableIntStateOf(prefs.checkIntervalMinutes) }
-    var useRootMode by remember { mutableStateOf(prefs.useRootMode) }
 
     var useHyperOsBypass by remember { mutableStateOf(prefs.useHyperOsFocusBypass) }
     var enableDedup by remember { mutableStateOf(prefs.enableNotificationDedup) }
     var enableLiveUpdate by remember { mutableStateOf(prefs.enableLiveUpdate) }
     var isSendingTestPush by remember { mutableStateOf(false) }
-    var isCheckingRoot by remember { mutableStateOf(false) }
     var errorDialogMessage by remember { mutableStateOf<String?>(null) }
 
     // Whether this device can actually render a Super Island. Kept as state rather
@@ -930,60 +927,6 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                                     )
                                 }
                             }
-                        }
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "优先使用 Root 模式", fontWeight = FontWeight.Medium)
-                                Text(
-                                    text = "通过 su 读取 /sys/class/.../capacity 核心节点",
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.outline
-                                )
-                            }
-                            Switch(
-                                checked = useRootMode,
-                                enabled = !isCheckingRoot,
-                                onCheckedChange = { wantsRoot ->
-                                    if (!wantsRoot) {
-                                        useRootMode = false
-                                        prefs.useRootMode = false
-                                        return@Switch
-                                    }
-                                    // Turning it on has to prove su works first. Leaving
-                                    // the switch on when it does not would silently fall
-                                    // back to the standard API at every check anyway.
-                                    isCheckingRoot = true
-                                    coroutineScope.launch {
-                                        val hasRoot = withContext(Dispatchers.IO) {
-                                            RootBatteryManager.checkRootAccess()
-                                        }
-                                        isCheckingRoot = false
-                                        if (hasRoot) {
-                                            useRootMode = true
-                                            prefs.useRootMode = true
-                                            Toast.makeText(
-                                                context,
-                                                "Root 权限可用 (uid=0)，已切换为 Root 模式",
-                                                Toast.LENGTH_SHORT
-                                            ).show()
-                                            LogRepository.addLog("Root 权限检测通过，已开启 Root 模式")
-                                        } else {
-                                            useRootMode = false
-                                            prefs.useRootMode = false
-                                            errorDialogMessage =
-                                                "无法获取 Root 权限。\n\n" +
-                                                    "请确认设备已 Root，并在 Root 管理软件" +
-                                                    "（Magisk / APatch / KernelSU）中为本应用授权。"
-                                            LogRepository.addLog("Root 权限检测失败，已保持关闭", isError = true)
-                                        }
-                                    }
-                                }
-                            )
                         }
 
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
