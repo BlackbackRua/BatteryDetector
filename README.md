@@ -34,9 +34,7 @@ java.lang.IllegalAccessError: Class kotlin.sequences.d extended by class y41 is 
   at kotlinx.coroutines.m.b
 ```
 
-原因是该优化重写了 `kotlinx.coroutines` 的内部类层次。keep 规则位于
-`app/src/main/keepRules/rules.keep`，其中最关键的一条是保留
-`PrivilegedServiceImpl` —— Shizuku 以类名反射实例化它，被改名会导致
+原因是该优化重写了 `kotlinx.coroutines` 的内部类层次。
 
 ## 已知问题
 小米超级岛即使在已授权shizuku的情况下仍大概率无法使用。对于小米设备，请考虑切换到实况通知或普通通知
