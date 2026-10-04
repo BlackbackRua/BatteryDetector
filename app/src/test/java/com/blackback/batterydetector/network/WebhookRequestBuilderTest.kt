@@ -249,6 +249,41 @@ class WebhookRequestBuilderTest {
     // ------------------------------------------------------- plain text template
 
     @Test
+    fun `a custom title reaches every payload shape`() {
+        // The title is what the receiver shows first, so a custom one must survive
+        // into Bark's `title`, Telegram's text and the generic `title` field.
+        val bark = WebhookRequestBuilder.build(
+            url = "https://day.app/KEY/",
+            service = WebhookRequestBuilder.SERVICE_BARK,
+            method = "POST", rawHeaders = "", customBody = "",
+            barkSound = "", barkLevel = "",
+            title = "自定义标题", message = "正文", deviceName = "D",
+            batteryLevel = 1, timestamp = 0L
+        ).body!!
+        assertTrue("bark lost the title: $bark", bark.contains("\"title\":\"自定义标题\""))
+
+        val generic = WebhookRequestBuilder.build(
+            url = "https://self.hosted/notify",
+            service = WebhookRequestBuilder.SERVICE_AUTO,
+            method = "POST", rawHeaders = "", customBody = "",
+            barkSound = "", barkLevel = "",
+            title = "自定义标题", message = "正文", deviceName = "D",
+            batteryLevel = 1, timestamp = 0L
+        ).body!!
+        assertTrue("generic lost the title: $generic", generic.contains("\"title\":\"自定义标题\""))
+
+        val telegram = WebhookRequestBuilder.build(
+            url = "https://api.telegram.org/bot1/sendMessage",
+            service = WebhookRequestBuilder.SERVICE_TELEGRAM,
+            method = "POST", rawHeaders = "", customBody = "",
+            barkSound = "", barkLevel = "",
+            title = "自定义标题", message = "正文", deviceName = "D",
+            batteryLevel = 1, timestamp = 0L
+        ).body!!
+        assertTrue("telegram lost the title: $telegram", telegram.contains("自定义标题"))
+    }
+
+    @Test
     fun `renderPlainText substitutes every token`() {
         val out = WebhookRequestBuilder.renderPlainText(
             template = "{{device}} 电量 {{battery}}% at {{timestamp}} | {{title}} | {{message}}",

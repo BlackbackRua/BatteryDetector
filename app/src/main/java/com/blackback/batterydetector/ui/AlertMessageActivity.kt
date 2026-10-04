@@ -37,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -145,8 +146,28 @@ fun AlertMessageScreen(onBack: () -> Unit) {
     var titleText by remember { mutableStateOf(prefs.alertTitleTemplate(route)) }
     var routeMenuExpanded by remember { mutableStateOf(false) }
 
-    // Reload both fields whenever the route changes, so switching routes shows that
-    // route's own templates rather than carrying the previous ones over.
+    // Writes whatever is currently in the fields for the given route, skipping the
+    // debounce. Used when leaving the screen or switching route, so a change is
+    // never lost by navigating inside the idle window - which used to make a fresh
+    // edit look like it had not applied at all.
+    fun flush(routeToSave: String) {
+        if (prefs.alertMessageTemplate(routeToSave) != text) {
+            prefs.setAlertMessageTemplate(routeToSave, text)
+        }
+        if (prefs.alertTitleTemplate(routeToSave) != titleText) {
+            prefs.setAlertTitleTemplate(routeToSave, titleText)
+        }
+    }
+
+    // The effect is keyed on the route so its dispose runs both when leaving the
+    // screen and when switching route; in the latter case the values still belong to
+    // the outgoing route, which is exactly what needs saving before they are
+    // replaced by the next route's stored ones.
+    DisposableEffect(route) {
+        onDispose { flush(route) }
+    }
+
+    // Reload both fields whenever the route changes.
     LaunchedEffect(route) {
         text = prefs.alertMessageTemplate(route)
         titleText = prefs.alertTitleTemplate(route)

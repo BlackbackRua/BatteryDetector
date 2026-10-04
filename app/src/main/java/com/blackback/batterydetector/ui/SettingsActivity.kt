@@ -284,10 +284,11 @@ private fun TestAlertButton(
                             SmtpMailer.Result(false, "邮件未配置完整")
                         } else {
                             withContext(Dispatchers.IO) {
-                                SmtpMailer.send(
+                                prefs.sendAlertEmail(
                                     config = config,
-                                    subject = "BatteryDetector 测试推送",
-                                    body = testMessage
+                                    isTest = true,
+                                    deviceName = deviceName,
+                                    batteryLevel = batteryLevel
                                 )
                             }
                         }
@@ -356,7 +357,6 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
     var smtpPassword by remember { mutableStateOf(prefs.smtpPassword) }
     var smtpFrom by remember { mutableStateOf(prefs.smtpFrom) }
     var smtpTo by remember { mutableStateOf(prefs.smtpTo) }
-    var isSendingTestMail by remember { mutableStateOf(false) }
     var lowThreshold by remember { mutableFloatStateOf(prefs.lowBatteryThreshold.toFloat()) }
     var checkInterval by remember { mutableIntStateOf(prefs.checkIntervalMinutes) }
 
@@ -1113,41 +1113,11 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                             singleLine = true
                         )
 
-                        OutlinedButton(
-                            onClick = {
-                                val config = SmtpMailer.configFrom(prefs)
-                                if (config == null) {
-                                    errorDialogMessage =
-                                        "邮件未配置完整：需要填写 SMTP 服务器、发信账号、授权码和收件人。"
-                                    return@OutlinedButton
-                                }
-                                isSendingTestMail = true
-                                coroutineScope.launch {
-                                    val result = withContext(Dispatchers.IO) {
-                                        SmtpMailer.send(
-                                            config = config,
-                                            subject = "BatteryDetector 邮件测试",
-                                            body = "设备 [${prefs.deviceName}] 邮件推送配置正常。"
-                                        )
-                                    }
-                                    isSendingTestMail = false
-                                    if (result.success) {
-                                        Toast.makeText(context, result.message, Toast.LENGTH_SHORT).show()
-                                        LogRepository.addLog("[邮件] ${result.message}")
-                                    } else {
-                                        errorDialogMessage = result.message
-                                        LogRepository.addLog("[邮件] ${result.message}", isError = true)
-                                    }
-                                }
-                            },
-                            enabled = !isSendingTestMail,
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Text(
-                                if (isSendingTestMail) "发送中..." else "发送测试邮件",
-                                fontSize = 12.sp
-                            )
-                        }
+                        // The separate "send a test email" button was removed: it
+                        // duplicated the alert test path with its own hard-coded
+                        // subject and body, so it could pass while the real route was
+                        // broken, and it ignored the configured alert text. SMTP
+                        // connectivity is verified by the alert test below.
                         }
 
                         Column {

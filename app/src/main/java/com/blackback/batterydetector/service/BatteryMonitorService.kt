@@ -208,7 +208,14 @@ class BatteryMonitorService : Service() {
                     onResult(false)
                     return
                 }
-                val result = withContext(Dispatchers.IO) { SmtpMailer.send(config, title, message) }
+                val result = withContext(Dispatchers.IO) {
+                    prefs.sendAlertEmail(
+                        config = config,
+                        isTest = isTest,
+                        deviceName = prefs.deviceName,
+                        batteryLevel = batteryLevel
+                    )
+                }
                 LogRepository.addLog(
                     if (result.success) "邮件推送成功" else result.message,
                     isError = !result.success,

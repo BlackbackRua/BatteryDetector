@@ -191,6 +191,27 @@ class AppPreferences(context: Context) {
         )
     }
 
+    /**
+     * Sends an alert over the email route using the resolved title and body.
+     *
+     * Lives here rather than at the call site so the custom title cannot be
+     * forgotten: the subject used to be hard-coded, which silently ignored a
+     * configured title while the editor showed one.
+     */
+    suspend fun sendAlertEmail(
+        config: SmtpMailer.Config,
+        isTest: Boolean,
+        deviceName: String,
+        batteryLevel: Int
+    ): SmtpMailer.Result {
+        val route = PUSH_EMAIL
+        return SmtpMailer.send(
+            config = config,
+            subject = resolveAlertTitle(route, isTest, deviceName, batteryLevel),
+            body = resolveAlertMessage(route, isTest, deviceName, batteryLevel)
+        )
+    }
+
     var deviceName: String
         get() = prefs.getString(KEY_DEVICE_NAME, Build.MODEL) ?: Build.MODEL
         set(value) = prefs.edit().putString(KEY_DEVICE_NAME, value).apply()
