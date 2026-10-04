@@ -160,11 +160,13 @@ class BatteryMonitorService : Service() {
      */
     private suspend fun dispatchAlert(batteryLevel: Int, isTest: Boolean, onResult: (Boolean) -> Unit) {
         val title = if (isTest) "BatteryDetector 测试推送" else "低电量预警"
-        val message = if (isTest) {
-            "设备 [${prefs.deviceName}] 当前电量为 $batteryLevel%，网络通知功能正常！"
-        } else {
-            "警告：设备 [${prefs.deviceName}] 当前电量仅剩 $batteryLevel%，请及时充电！"
-        }
+        // A configured template applies to real alerts too, not just test sends.
+        val message = prefs.resolveAlertMessage(
+            route = prefs.pushMethod,
+            isTest = isTest,
+            deviceName = prefs.deviceName,
+            batteryLevel = batteryLevel
+        )
 
         when (prefs.pushMethod) {
             AppPreferences.PUSH_WEBHOOK -> {
