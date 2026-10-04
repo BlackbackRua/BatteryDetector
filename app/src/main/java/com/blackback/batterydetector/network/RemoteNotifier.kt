@@ -43,6 +43,13 @@ object RemoteNotifier {
         customBody: String = "",
         barkSound: String = "",
         barkLevel: String = "",
+        /**
+         * Overrides the generated alert text.
+         *
+         * Used by the custom test message so the test can carry text the real alert
+         * would not, such as awkward characters worth verifying.
+         */
+        messageOverride: String? = null,
         onResult: (Boolean, String) -> Unit
     ) {
         val formattedUrl = normalizeUrl(webhookUrl)
@@ -54,7 +61,7 @@ object RemoteNotifier {
         }
 
         val title = if (isTest) "BatteryDetector 测试推送" else "低电量预警"
-        val message = if (isTest) {
+        val message = messageOverride ?: if (isTest) {
             "设备 [$deviceName] 当前电量为 $batteryLevel%，网络通知功能正常！"
         } else {
             "警告：设备 [$deviceName] 当前电量仅剩 $batteryLevel%，请及时充电！"

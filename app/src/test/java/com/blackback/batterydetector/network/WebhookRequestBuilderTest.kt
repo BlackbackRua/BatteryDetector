@@ -246,6 +246,51 @@ class WebhookRequestBuilderTest {
         assertTrue(out.contains("{{unknown}}"))
     }
 
+    // ------------------------------------------------------- plain text template
+
+    @Test
+    fun `renderPlainText substitutes every token`() {
+        val out = WebhookRequestBuilder.renderPlainText(
+            template = "{{device}} 电量 {{battery}}% at {{timestamp}} | {{title}} | {{message}}",
+            title = "低电量预警", message = "默认正文", deviceName = "平板",
+            batteryLevel = 12, timestamp = 99L
+        )
+        assertEquals("平板 电量 12% at 99 | 低电量预警 | 默认正文", out)
+    }
+
+    @Test
+    fun `renderPlainText does not json escape`() {
+        // A newline must stay a real line break: this text may travel by email or a
+        // LAN broadcast, where a literal backslash-n would be wrong.
+        val out = WebhookRequestBuilder.renderPlainText(
+            template = "{{message}}",
+            title = "", message = "第一行\n第二行", deviceName = "",
+            batteryLevel = 1, timestamp = 0L
+        )
+        assertEquals("第一行\n第二行", out)
+        assertFalse(out.contains("\\n"))
+    }
+
+    @Test
+    fun `renderPlainText leaves quotes untouched`() {
+        val out = WebhookRequestBuilder.renderPlainText(
+            template = "{{device}}",
+            title = "", message = "", deviceName = "He said \"hi\"",
+            batteryLevel = 1, timestamp = 0L
+        )
+        assertEquals("He said \"hi\"", out)
+    }
+
+    @Test
+    fun `renderPlainText leaves unknown placeholders untouched`() {
+        val out = WebhookRequestBuilder.renderPlainText(
+            template = "x {{nope}} y",
+            title = "t", message = "m", deviceName = "d",
+            batteryLevel = 1, timestamp = 0L
+        )
+        assertEquals("x {{nope}} y", out)
+    }
+
     // --------------------------------------------------------- json validation
 
     @Test

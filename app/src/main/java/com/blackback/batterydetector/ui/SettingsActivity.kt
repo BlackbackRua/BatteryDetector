@@ -1,5 +1,6 @@
 package com.blackback.batterydetector.ui
 
+import android.app.ActivityOptions
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -224,13 +225,22 @@ private fun TestAlertButton(
 
             onSendingChanged(true)
 
+            // Resolved through the same helper the service uses, so a test send and
+            // a real alert can never disagree about the wording.
+            val testMessage = prefs.resolveAlertMessage(
+                route = pushMethod,
+                isTest = true,
+                deviceName = deviceName,
+                batteryLevel = batteryLevel
+            )
+
             // The on-device notification is always shown, so the local rendering
             // path is exercised whatever route is selected.
             scope.launch {
                 LanSyncEngine.showLocalTestNotification(
                     context = context,
                     title = "BatteryDetector 测试推送",
-                    message = "设备 [$deviceName] 测试通知"
+                    message = testMessage
                 )
             }
 
@@ -250,7 +260,8 @@ private fun TestAlertButton(
                                 service = webhookService,
                                 customBody = webhookCustomBody,
                                 barkSound = barkSound,
-                                barkLevel = barkLevel
+                                barkLevel = barkLevel,
+                                messageOverride = testMessage
                             ) { success, msg ->
                                 if (!success) failure = msg
                                 if (cont.isActive) cont.resume(success)
@@ -268,7 +279,7 @@ private fun TestAlertButton(
                                 SmtpMailer.send(
                                     config = config,
                                     subject = "BatteryDetector 测试推送",
-                                    body = "设备 [$deviceName] 邮件推送测试，当前电量 $batteryLevel%。"
+                                    body = testMessage
                                 )
                             }
                         }
@@ -285,7 +296,7 @@ private fun TestAlertButton(
                                 port = port,
                                 deviceName = deviceName,
                                 batteryLevel = batteryLevel,
-                                message = "局域网广播测试消息",
+                                message = testMessage,
                                 isTest = true
                             ) { success, msg ->
                                 if (!success) failure = "局域网广播：$msg"
@@ -1154,6 +1165,22 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                         // ---------------- 测试 ----------------
                         // Both test actions live at the end of this card, beside the
                         // settings they exercise.
+                        OutlinedButton(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(context, AlertMessageActivity::class.java),
+                                    ActivityOptions.makeCustomAnimation(
+                                        context,
+                                        R.anim.slide_in_right,
+                                        R.anim.slide_out_left
+                                    ).toBundle()
+                                )
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("预警消息内容", fontSize = 13.sp)
+                        }
+
                         TestAlertButton(
                             pushMethod = pushMethod,
                             webhookUrl = webhookUrl,
@@ -1175,12 +1202,20 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                         Button(
                             onClick = {
                                 val port = lanPortStr.toIntOrNull() ?: 18888
+                                val level = 12
+                                // Same resolver as every other send path.
+                                val lanMessage = prefs.resolveAlertMessage(
+                                    route = AppPreferences.PUSH_LAN,
+                                    isTest = true,
+                                    deviceName = deviceName,
+                                    batteryLevel = level
+                                )
                                 LanSyncEngine.sendUdpBroadcast(
                                     context = context,
                                     port = port,
                                     deviceName = "$deviceName (本机测试)",
-                                    batteryLevel = 12,
-                                    message = "接收方局域网同步测试",
+                                    batteryLevel = level,
+                                    message = lanMessage,
                                     isTest = true
                                 ) { success, msg ->
                                     if (success) {

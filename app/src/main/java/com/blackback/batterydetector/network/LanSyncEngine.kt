@@ -193,11 +193,11 @@ object LanSyncEngine {
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val titleText = if (isTest) "BatteryDetector 测试推送" else "低电量预警"
-                val bodyText = if (isTest) {
-                    "设备 [$deviceName] 当前电量为 $batteryLevel%，网络通知功能正常！"
-                } else {
-                    message
-                }
+                // The caller's message is used as-is in both cases. Previously a
+                // test send substituted its own wording here, which silently threw
+                // away whatever the caller passed - so a custom test message never
+                // reached the receiver.
+                val bodyText = message
 
                 val json = JSONObject().apply {
                     put("type", if (isTest) "TEST" else "LOW_BATTERY")

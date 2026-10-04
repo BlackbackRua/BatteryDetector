@@ -100,6 +100,52 @@ class AppPreferences(context: Context) {
         get() = prefs.getString(KEY_SMTP_TO, "") ?: ""
         set(value) = prefs.edit().putString(KEY_SMTP_TO, value).apply()
 
+    // --- custom test message -------------------------------------------------
+    //
+    // One template per push route, so each receiver can be exercised with the shape
+    // it will actually get. An empty value means "use the built-in default", which
+    // keeps the stored state distinguishable from a deliberately blank message.
+
+    /** Template for [route]; empty means the built-in default message is used. */
+    fun alertMessageTemplate(route: String): String =
+        prefs.getString(KEY_ALERT_MESSAGE_PREFIX + route, "") ?: ""
+
+    /** Stores the template for [route]; blank clears it back to the default. */
+    fun setAlertMessageTemplate(route: String, value: String) {
+        prefs.edit().putString(KEY_ALERT_MESSAGE_PREFIX + route, value).apply()
+    }
+
+    /**
+     * Final text for an alert on [route], after placeholder substitution.
+     *
+     * Applies to real alerts as well as test sends: the configured template is used
+     * whenever one is set, and the built-in wording only when it is blank. Kept here
+     * so the service and the settings screen cannot resolve it differently.
+     */
+    fun resolveAlertMessage(
+        route: String,
+        isTest: Boolean,
+        deviceName: String,
+        batteryLevel: Int,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        val builtIn = if (isTest) {
+            "设备 [$deviceName] 当前电量为 $batteryLevel%，网络通知功能正常！"
+        } else {
+            "警告：设备 [$deviceName] 当前电量仅剩 $batteryLevel%，请及时充电！"
+        }
+        val template = alertMessageTemplate(route)
+        if (template.isBlank()) return builtIn
+        return WebhookRequestBuilder.renderPlainText(
+            template = template,
+            title = if (isTest) "BatteryDetector 测试推送" else "低电量预警",
+            message = builtIn,
+            deviceName = deviceName,
+            batteryLevel = batteryLevel,
+            timestamp = timestamp
+        )
+    }
+
     var deviceName: String
         get() = prefs.getString(KEY_DEVICE_NAME, Build.MODEL) ?: Build.MODEL
         set(value) = prefs.edit().putString(KEY_DEVICE_NAME, value).apply()
@@ -208,6 +254,7 @@ class AppPreferences(context: Context) {
         private const val KEY_SMTP_PASSWORD = "smtp_password"
         private const val KEY_SMTP_FROM = "smtp_from"
         private const val KEY_SMTP_TO = "smtp_to"
+        private const val KEY_ALERT_MESSAGE_PREFIX = "alert_message_"
         private const val KEY_WEBHOOK_METHOD = "webhook_method"
         private const val KEY_WEBHOOK_HEADERS = "webhook_headers"
         private const val KEY_WEBHOOK_SERVICE = "webhook_service"

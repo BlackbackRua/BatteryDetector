@@ -127,6 +127,30 @@ object WebhookRequestBuilder {
     )
 
     /**
+     * Substitutes placeholders into plain text, with no escaping at all.
+     *
+     * Used by the custom test message, which may travel over email or a LAN
+     * broadcast rather than inside a JSON document. Escaping would be wrong here:
+     * a newline in the template should stay a real line break in the message body,
+     * not become a literal backslash-n.
+     */
+    fun renderPlainText(
+        template: String,
+        title: String,
+        message: String,
+        deviceName: String,
+        batteryLevel: Int,
+        timestamp: Long
+    ): String {
+        return template
+            .replace("{{title}}", title)
+            .replace("{{message}}", message)
+            .replace("{{device}}", deviceName)
+            .replace("{{battery}}", batteryLevel.toString())
+            .replace("{{timestamp}}", timestamp.toString())
+    }
+
+    /**
      * Substitutes template placeholders with escaped values.
      *
      * String tokens are inserted *without* surrounding quotes, because the template
