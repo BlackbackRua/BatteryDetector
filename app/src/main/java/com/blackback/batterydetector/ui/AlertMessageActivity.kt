@@ -124,14 +124,7 @@ private val MESSAGE_ROUTES = listOf(
 )
 
 private fun routeLabel(value: String): String =
-    MESSAGE_ROUTES.firstOrNull { it.first == value }?.second ?: "Webhook"
-
-/** Default text shown when a route has no custom template. */
-private fun defaultPreview(route: String): String = when (route) {
-    AppPreferences.PUSH_EMAIL -> "主题：BatteryDetector 测试推送\n\n设备 [本机] 邮件推送测试，当前电量 88%。"
-    AppPreferences.PUSH_LAN -> "设备 [本机] 当前电量为 88%，网络通知功能正常！"
-    else -> "设备 [本机] 当前电量为 88%，网络通知功能正常！"
-}
+    MESSAGE_ROUTES.firstOrNull { it.first == value }?.second ?: "局域网"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -149,20 +142,28 @@ fun AlertMessageScreen(onBack: () -> Unit) {
         )
     }
     var text by remember { mutableStateOf(prefs.alertMessageTemplate(route)) }
+    var titleText by remember { mutableStateOf(prefs.alertTitleTemplate(route)) }
     var routeMenuExpanded by remember { mutableStateOf(false) }
 
-    // Reload the field whenever the route changes, so switching tabs shows that
-    // route's own template rather than carrying the previous one over.
+    // Reload both fields whenever the route changes, so switching routes shows that
+    // route's own templates rather than carrying the previous ones over.
     LaunchedEffect(route) {
         text = prefs.alertMessageTemplate(route)
+        titleText = prefs.alertTitleTemplate(route)
     }
 
-    // Debounced autosave. Waiting for a pause avoids a disk write per keystroke
-    // while still meaning the user never has to press save.
+    // Debounced autosave, one timer per field. Waiting for a pause avoids a disk
+    // write per keystroke while still meaning the user never has to press save.
     LaunchedEffect(route, text) {
         if (prefs.alertMessageTemplate(route) == text) return@LaunchedEffect
         delay(500)
         prefs.setAlertMessageTemplate(route, text)
+    }
+
+    LaunchedEffect(route, titleText) {
+        if (prefs.alertTitleTemplate(route) == titleText) return@LaunchedEffect
+        delay(500)
+        prefs.setAlertTitleTemplate(route, titleText)
     }
 
     Scaffold(
@@ -250,17 +251,39 @@ fun AlertMessageScreen(onBack: () -> Unit) {
                         }
                     }
 
+                    // Title and body are separate receivers-side fields, so they get
+                    // separate editors rather than one blob of text that each channel
+                    // would have to split again.
+                    OutlinedTextField(
+                        value = titleText,
+                        onValueChange = { titleText = it },
+                        label = { Text("标题") },
+                        placeholder = {
+                            Text(prefs.defaultAlertTitle(isTest = false))
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        singleLine = true
+                    )
+
                     OutlinedTextField(
                         value = text,
                         onValueChange = { text = it },
-                        label = { Text("消息内容") },
-                        placeholder = { Text(defaultPreview(route)) },
+                        label = { Text("正文") },
+                        placeholder = {
+                            Text(
+                                prefs.defaultAlertMessage(
+                                    isTest = false,
+                                    deviceName = "本机",
+                                    batteryLevel = 20
+                                )
+                            )
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 4
                     )
 
                     Text(
-                        text = "留空则使用内置默认文案。输入后自动保存。",
+                        text = "任一项留空则该项使用内置默认文案。输入后自动保存。",
                         fontSize = 11.sp,
                         color = MaterialTheme.colorScheme.outline
                     )
@@ -315,7 +338,7 @@ fun AlertMessageScreen(onBack: () -> Unit) {
 private val PLACEHOLDER_HINTS = listOf(
     "{{device}}" to "本机设备名称",
     "{{battery}}" to "当前电量数字，例如 88",
-    "{{title}}" to "标题，例如「低电量预警」",
-    "{{message}}" to "内置的默认消息全文",
+    "{{title}}" to "当前标题（正文里引用标题时用）",
+    "{{message}}" to "内置的默认正文全文",
     "{{timestamp}}" to "毫秒时间戳"
 )

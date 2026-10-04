@@ -226,8 +226,15 @@ private fun TestAlertButton(
             onSendingChanged(true)
 
             // Resolved through the same helper the service uses, so a test send and
-            // a real alert can never disagree about the wording.
+            // a real alert can never disagree about the wording. Title and body are
+            // resolved separately because they are separate fields on the wire.
             val testMessage = prefs.resolveAlertMessage(
+                route = pushMethod,
+                isTest = true,
+                deviceName = deviceName,
+                batteryLevel = batteryLevel
+            )
+            val testTitle = prefs.resolveAlertTitle(
                 route = pushMethod,
                 isTest = true,
                 deviceName = deviceName,
@@ -261,6 +268,7 @@ private fun TestAlertButton(
                                 customBody = webhookCustomBody,
                                 barkSound = barkSound,
                                 barkLevel = barkLevel,
+                                titleOverride = testTitle,
                                 messageOverride = testMessage
                             ) { success, msg ->
                                 if (!success) failure = msg
@@ -297,7 +305,8 @@ private fun TestAlertButton(
                                 deviceName = deviceName,
                                 batteryLevel = batteryLevel,
                                 message = testMessage,
-                                isTest = true
+                                isTest = true,
+                                titleOverride = testTitle
                             ) { success, msg ->
                                 if (!success) failure = "局域网广播：$msg"
                                 if (cont.isActive) cont.resume(success)
@@ -1178,7 +1187,7 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("预警消息内容", fontSize = 13.sp)
+                            Text("自定义消息内容", fontSize = 13.sp)
                         }
 
                         TestAlertButton(
@@ -1203,8 +1212,14 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                             onClick = {
                                 val port = lanPortStr.toIntOrNull() ?: 18888
                                 val level = 12
-                                // Same resolver as every other send path.
+                                // Same resolvers as every other send path.
                                 val lanMessage = prefs.resolveAlertMessage(
+                                    route = AppPreferences.PUSH_LAN,
+                                    isTest = true,
+                                    deviceName = deviceName,
+                                    batteryLevel = level
+                                )
+                                val lanTitle = prefs.resolveAlertTitle(
                                     route = AppPreferences.PUSH_LAN,
                                     isTest = true,
                                     deviceName = deviceName,
@@ -1216,7 +1231,8 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                                     deviceName = "$deviceName (本机测试)",
                                     batteryLevel = level,
                                     message = lanMessage,
-                                    isTest = true
+                                    isTest = true,
+                                    titleOverride = lanTitle
                                 ) { success, msg ->
                                     if (success) {
                                         Toast.makeText(context, "已发送局域网同步测试数据", Toast.LENGTH_SHORT).show()

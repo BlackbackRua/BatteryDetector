@@ -159,8 +159,14 @@ class BatteryMonitorService : Service() {
      * caller's "do not re-alert" flag is only set on a real success.
      */
     private suspend fun dispatchAlert(batteryLevel: Int, isTest: Boolean, onResult: (Boolean) -> Unit) {
-        val title = if (isTest) "BatteryDetector 测试推送" else "低电量预警"
         // A configured template applies to real alerts too, not just test sends.
+        // Title and body are resolved separately so each can be customised on its own.
+        val title = prefs.resolveAlertTitle(
+            route = prefs.pushMethod,
+            isTest = isTest,
+            deviceName = prefs.deviceName,
+            batteryLevel = batteryLevel
+        )
         val message = prefs.resolveAlertMessage(
             route = prefs.pushMethod,
             isTest = isTest,
@@ -187,7 +193,9 @@ class BatteryMonitorService : Service() {
                         service = prefs.webhookService,
                         customBody = prefs.webhookCustomBody,
                         barkSound = prefs.barkSound,
-                        barkLevel = prefs.barkLevel
+                        barkLevel = prefs.barkLevel,
+                        titleOverride = title,
+                        messageOverride = message
                     ) { success, _ -> if (cont.isActive) cont.resume(success) }
                 }
                 onResult(ok)
@@ -222,7 +230,8 @@ class BatteryMonitorService : Service() {
                         deviceName = prefs.deviceName,
                         batteryLevel = batteryLevel,
                         message = message,
-                        isTest = isTest
+                        isTest = isTest,
+                        titleOverride = title
                     ) { success, _ -> if (cont.isActive) cont.resume(success) }
                 }
                 onResult(ok)

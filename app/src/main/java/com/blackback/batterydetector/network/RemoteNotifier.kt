@@ -43,6 +43,8 @@ object RemoteNotifier {
         customBody: String = "",
         barkSound: String = "",
         barkLevel: String = "",
+        /** Overrides the generated title; used by the custom alert text. */
+        titleOverride: String? = null,
         /**
          * Overrides the generated alert text.
          *
@@ -60,7 +62,7 @@ object RemoteNotifier {
             return
         }
 
-        val title = if (isTest) "BatteryDetector 测试推送" else "低电量预警"
+        val title = titleOverride ?: if (isTest) "BatteryDetector 测试推送" else "低电量预警"
         val message = messageOverride ?: if (isTest) {
             "设备 [$deviceName] 当前电量为 $batteryLevel%，网络通知功能正常！"
         } else {

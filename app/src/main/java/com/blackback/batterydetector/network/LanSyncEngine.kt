@@ -188,11 +188,14 @@ object LanSyncEngine {
         batteryLevel: Int,
         message: String,
         isTest: Boolean = false,
+        /** Overrides the generated title; null keeps the built-in one. */
+        titleOverride: String? = null,
         onResult: (Boolean, String) -> Unit
     ) {
         CoroutineScope(Dispatchers.IO).launch {
             try {
-                val titleText = if (isTest) "BatteryDetector 测试推送" else "低电量预警"
+                val titleText = titleOverride
+                    ?: if (isTest) "BatteryDetector 测试推送" else "低电量预警"
                 // The caller's message is used as-is in both cases. Previously a
                 // test send substituted its own wording here, which silently threw
                 // away whatever the caller passed - so a custom test message never

@@ -101,26 +101,75 @@ class AppPreferences(context: Context) {
         set(value) = prefs.edit().putString(KEY_SMTP_TO, value).apply()
 
     // --- custom test message -------------------------------------------------
+    // --- custom alert text ---------------------------------------------------
     //
-    // One template per push route, so each receiver can be exercised with the shape
-    // it will actually get. An empty value means "use the built-in default", which
-    // keeps the stored state distinguishable from a deliberately blank message.
+    // Title and body are stored separately per push route, because most receivers
+    // treat them as distinct fields (Bark `title`/`body`, an email subject versus
+    // its body, the notification's title versus its text). An empty value means
+    // "use the built-in default", which keeps the stored state distinguishable from
+    // a deliberately blank string.
 
-    /** Template for [route]; empty means the built-in default message is used. */
+    /** Body template for [route]; empty means the built-in default text is used. */
     fun alertMessageTemplate(route: String): String =
         prefs.getString(KEY_ALERT_MESSAGE_PREFIX + route, "") ?: ""
 
-    /** Stores the template for [route]; blank clears it back to the default. */
+    /** Stores the body template for [route]; blank clears it back to the default. */
     fun setAlertMessageTemplate(route: String, value: String) {
         prefs.edit().putString(KEY_ALERT_MESSAGE_PREFIX + route, value).apply()
     }
 
+    /** Title template for [route]; empty means the built-in default title is used. */
+    fun alertTitleTemplate(route: String): String =
+        prefs.getString(KEY_ALERT_TITLE_PREFIX + route, "") ?: ""
+
+    /** Stores the title template for [route]; blank clears it back to the default. */
+    fun setAlertTitleTemplate(route: String, value: String) {
+        prefs.edit().putString(KEY_ALERT_TITLE_PREFIX + route, value).apply()
+    }
+
+    /** Built-in title, used when no template is set. */
+    fun defaultAlertTitle(isTest: Boolean): String =
+        if (isTest) "BatteryDetector 测试推送" else "低电量预警"
+
+    /** Built-in body, used when no template is set. */
+    fun defaultAlertMessage(isTest: Boolean, deviceName: String, batteryLevel: Int): String =
+        if (isTest) {
+            "设备 [$deviceName] 当前电量为 $batteryLevel%，网络通知功能正常！"
+        } else {
+            "警告：设备 [$deviceName] 当前电量仅剩 $batteryLevel%，请及时充电！"
+        }
+
     /**
-     * Final text for an alert on [route], after placeholder substitution.
+     * Final title text for an alert on [route], after placeholder substitution.
      *
      * Applies to real alerts as well as test sends: the configured template is used
      * whenever one is set, and the built-in wording only when it is blank. Kept here
      * so the service and the settings screen cannot resolve it differently.
+     */
+    fun resolveAlertTitle(
+        route: String,
+        isTest: Boolean,
+        deviceName: String,
+        batteryLevel: Int,
+        timestamp: Long = System.currentTimeMillis()
+    ): String {
+        val template = alertTitleTemplate(route)
+        if (template.isBlank()) return defaultAlertTitle(isTest)
+        return WebhookRequestBuilder.renderPlainText(
+            template = template,
+            title = defaultAlertTitle(isTest),
+            message = defaultAlertMessage(isTest, deviceName, batteryLevel),
+            deviceName = deviceName,
+            batteryLevel = batteryLevel,
+            timestamp = timestamp
+        )
+    }
+
+    /**
+     * Final body text for an alert on [route], after placeholder substitution.
+     *
+     * The `{{title}}` token resolves to the title that will actually be sent, so a
+     * body can still repeat or reference it after the title was customised.
      */
     fun resolveAlertMessage(
         route: String,
@@ -129,16 +178,12 @@ class AppPreferences(context: Context) {
         batteryLevel: Int,
         timestamp: Long = System.currentTimeMillis()
     ): String {
-        val builtIn = if (isTest) {
-            "设备 [$deviceName] 当前电量为 $batteryLevel%，网络通知功能正常！"
-        } else {
-            "警告：设备 [$deviceName] 当前电量仅剩 $batteryLevel%，请及时充电！"
-        }
+        val builtIn = defaultAlertMessage(isTest, deviceName, batteryLevel)
         val template = alertMessageTemplate(route)
         if (template.isBlank()) return builtIn
         return WebhookRequestBuilder.renderPlainText(
             template = template,
-            title = if (isTest) "BatteryDetector 测试推送" else "低电量预警",
+            title = resolveAlertTitle(route, isTest, deviceName, batteryLevel, timestamp),
             message = builtIn,
             deviceName = deviceName,
             batteryLevel = batteryLevel,
@@ -255,6 +300,7 @@ class AppPreferences(context: Context) {
         private const val KEY_SMTP_FROM = "smtp_from"
         private const val KEY_SMTP_TO = "smtp_to"
         private const val KEY_ALERT_MESSAGE_PREFIX = "alert_message_"
+        private const val KEY_ALERT_TITLE_PREFIX = "alert_title_"
         private const val KEY_WEBHOOK_METHOD = "webhook_method"
         private const val KEY_WEBHOOK_HEADERS = "webhook_headers"
         private const val KEY_WEBHOOK_SERVICE = "webhook_service"
