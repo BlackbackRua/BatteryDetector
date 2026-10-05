@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,6 +29,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -133,20 +135,16 @@ class SettingsActivity : ComponentActivity() {
 }
 
 /**
- * The delivery routes offered by the push picker, in display order.
+ * The delivery routes offered by the channels picker, in display order.
  *
- * Declared once so the dropdown, its labels and the description text cannot drift
- * apart from the identifiers stored in preferences.
+ * There is no "do not push" entry: unchecking every box expresses that, and a
+ * separate option would be a second way to say the same thing.
  */
 private val PUSH_OPTIONS = listOf(
     AppPreferences.PUSH_LAN to "局域网广播",
     AppPreferences.PUSH_WEBHOOK to "Webhook 推送",
-    AppPreferences.PUSH_EMAIL to "邮件推送",
-    AppPreferences.PUSH_NONE to "不推送"
+    AppPreferences.PUSH_EMAIL to "邮件推送"
 )
-
-private fun pushMethodLabel(value: String): String =
-    PUSH_OPTIONS.firstOrNull { it.first == value }?.second ?: "局域网广播"
 
 /**
  * Notification service shapes offered by the webhook service picker.
@@ -173,16 +171,33 @@ private val BARK_LEVELS = listOf(
 )
 
 /**
- * Sends one alert over whichever route is currently selected.
+ * Repeat intervals for the low-battery alert, in minutes.
+ *
+ * 0 is "alert once": nothing is re-sent while the battery stays low, which is the
+ * same behaviour as stopping after the first warning. Exposed as an interval rather
+ * than a separate on/off switch so there is one control instead of two.
+ */
+private val ALERT_REPEAT_OPTIONS = listOf(
+    0 to "只提醒一次",
+    5 to "5 分钟",
+    15 to "15 分钟",
+    30 to "30 分钟",
+    60 to "1 小时"
+)
+
+/**
+ * Sends a test alert over every enabled route.
  *
  * Extracted from the settings screen so it can sit at the bottom of the push card,
- * next to the settings it exercises, rather than far below them in the self-test
- * section. Keeping it a composable with explicit parameters avoids a second copy of
- * this logic drifting away from the first.
+ * next to the settings it exercises. Keeping it a composable with explicit
+ * parameters avoids a second copy of this logic drifting away from the first.
+ *
+ * Mirrors the service's dispatcher: each selected route is attempted and the
+ * outcomes are collected, so one failing route does not hide the others.
  */
 @Composable
 private fun TestAlertButton(
-    pushMethod: String,
+    alertRoutes: Set<String>,
     webhookUrl: String,
     webhookMethod: String,
     webhookHeaders: String,
@@ -206,36 +221,26 @@ private fun TestAlertButton(
         onClick = {
             val port = lanPortStr.toIntOrNull() ?: 18888
 
-            // Validate the selected route first, so the message names the thing
-            // the user has to fix instead of failing later with a network error.
-            when (pushMethod) {
-                AppPreferences.PUSH_WEBHOOK ->
-                    if (webhookUrl.trim().isEmpty()) {
-                        onFailure("请先填写 Webhook 地址。")
-                        return@Button
-                    }
-                AppPreferences.PUSH_EMAIL ->
-                    if (SmtpMailer.configFrom(prefs) == null) {
-                        onFailure("邮件未配置完整：需要 SMTP 服务器、发信账号、授权码和收件人。")
-                        return@Button
-                    }
-                AppPreferences.PUSH_NONE ->
-                    onInfo("当前推送方式为「不推送」，仅本机弹出通知")
+            // Validate the enabled routes first, so the message names what the user
+            // has to fix instead of failing later with a network error.
+            if (alertRoutes.isEmpty()) {
+                onInfo("未选择任何通道，仅本机弹出通知")
+            }
+            if (AppPreferences.PUSH_WEBHOOK in alertRoutes && webhookUrl.trim().isEmpty()) {
+                onFailure("Webhook 通道已启用，但地址为空。")
+                return@Button
+            }
+            if (AppPreferences.PUSH_EMAIL in alertRoutes && SmtpMailer.configFrom(prefs) == null) {
+                onFailure("邮件通道已启用，但 SMTP 未配置完整：需要服务器、发信账号、授权码和收件人。")
+                return@Button
             }
 
             onSendingChanged(true)
 
-            // Resolved through the same helper the service uses, so a test send and
-            // a real alert can never disagree about the wording. Title and body are
-            // resolved separately because they are separate fields on the wire.
+            // Resolved through the same helpers the service uses, so a test send and
+            // a real alert can never disagree about the wording.
             val testMessage = prefs.resolveAlertMessage(
-                route = pushMethod,
-                isTest = true,
-                deviceName = deviceName,
-                batteryLevel = batteryLevel
-            )
-            val testTitle = prefs.resolveAlertTitle(
-                route = pushMethod,
+                route = alertRoutes.firstOrNull() ?: AppPreferences.PUSH_LAN,
                 isTest = true,
                 deviceName = deviceName,
                 batteryLevel = batteryLevel
@@ -252,73 +257,95 @@ private fun TestAlertButton(
             }
 
             scope.launch {
-                var failure: String? = null
+                val failures = mutableListOf<String>()
+                var sent = 0
 
-                when (pushMethod) {
-                    AppPreferences.PUSH_WEBHOOK -> {
-                        val ok = suspendCancellableCoroutine<Boolean> { cont ->
-                            RemoteNotifier.sendNotification(
-                                webhookUrl = webhookUrl.trim(),
-                                deviceName = deviceName,
-                                batteryLevel = batteryLevel,
-                                isTest = true,
-                                method = webhookMethod,
-                                headers = webhookHeaders,
-                                service = webhookService,
-                                customBody = webhookCustomBody,
-                                barkSound = barkSound,
-                                barkLevel = barkLevel,
-                                titleOverride = testTitle,
-                                messageOverride = testMessage
-                            ) { success, msg ->
-                                if (!success) failure = msg
-                                if (cont.isActive) cont.resume(success)
-                            }
-                        }
-                        if (ok) onInfo("Webhook 测试已发送")
-                    }
+                // Same order the service uses, so the log reads predictably.
+                val ordered = listOf(
+                    AppPreferences.PUSH_WEBHOOK,
+                    AppPreferences.PUSH_EMAIL,
+                    AppPreferences.PUSH_LAN
+                ).filter { it in alertRoutes }
 
-                    AppPreferences.PUSH_EMAIL -> {
-                        val config = SmtpMailer.configFrom(prefs)
-                        val result = if (config == null) {
-                            SmtpMailer.Result(false, "邮件未配置完整")
-                        } else {
-                            withContext(Dispatchers.IO) {
-                                prefs.sendAlertEmail(
-                                    config = config,
-                                    isTest = true,
+                for (route in ordered) {
+                    val perRouteTitle = prefs.resolveAlertTitle(
+                        route = route,
+                        isTest = true,
+                        deviceName = deviceName,
+                        batteryLevel = batteryLevel
+                    )
+                    val perRouteMessage = prefs.resolveAlertMessage(
+                        route = route,
+                        isTest = true,
+                        deviceName = deviceName,
+                        batteryLevel = batteryLevel
+                    )
+
+                    when (route) {
+                        AppPreferences.PUSH_WEBHOOK -> {
+                            val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                                RemoteNotifier.sendNotification(
+                                    webhookUrl = webhookUrl.trim(),
                                     deviceName = deviceName,
-                                    batteryLevel = batteryLevel
-                                )
+                                    batteryLevel = batteryLevel,
+                                    isTest = true,
+                                    method = webhookMethod,
+                                    headers = webhookHeaders,
+                                    service = webhookService,
+                                    customBody = webhookCustomBody,
+                                    barkSound = barkSound,
+                                    barkLevel = barkLevel,
+                                    titleOverride = perRouteTitle,
+                                    messageOverride = perRouteMessage
+                                ) { success, msg ->
+                                    if (!success) failures += "Webhook：$msg"
+                                    if (cont.isActive) cont.resume(success)
+                                }
                             }
+                            if (ok) sent++
                         }
-                        LogRepository.addLog("[邮件] ${result.message}", isError = !result.success)
-                        if (result.success) onInfo("测试邮件已发送") else failure = result.message
-                    }
 
-                    AppPreferences.PUSH_NONE -> Unit
-
-                    else -> {
-                        val ok = suspendCancellableCoroutine<Boolean> { cont ->
-                            LanSyncEngine.sendUdpBroadcast(
-                                context = context,
-                                port = port,
-                                deviceName = deviceName,
-                                batteryLevel = batteryLevel,
-                                message = testMessage,
-                                isTest = true,
-                                titleOverride = testTitle
-                            ) { success, msg ->
-                                if (!success) failure = "局域网广播：$msg"
-                                if (cont.isActive) cont.resume(success)
+                        AppPreferences.PUSH_EMAIL -> {
+                            val config = SmtpMailer.configFrom(prefs)
+                            val result = if (config == null) {
+                                SmtpMailer.Result(false, "邮件未配置完整")
+                            } else {
+                                withContext(Dispatchers.IO) {
+                                    prefs.sendAlertEmail(
+                                        config = config,
+                                        isTest = true,
+                                        deviceName = deviceName,
+                                        batteryLevel = batteryLevel
+                                    )
+                                }
                             }
+                            LogRepository.addLog("[邮件] ${result.message}", isError = !result.success)
+                            if (result.success) sent++ else failures += result.message
                         }
-                        if (ok) onInfo("局域网广播测试已发送")
+
+                        else -> {
+                            val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                                LanSyncEngine.sendUdpBroadcast(
+                                    context = context,
+                                    port = port,
+                                    deviceName = deviceName,
+                                    batteryLevel = batteryLevel,
+                                    message = perRouteMessage,
+                                    isTest = true,
+                                    titleOverride = perRouteTitle
+                                ) { success, msg ->
+                                    if (!success) failures += "局域网广播：$msg"
+                                    if (cont.isActive) cont.resume(success)
+                                }
+                            }
+                            if (ok) sent++
+                        }
                     }
                 }
 
+                if (sent > 0) onInfo("测试预警已通过 $sent 个通道发送")
+                if (failures.isNotEmpty()) onFailure(failures.joinToString("\n\n"))
                 onSendingChanged(false)
-                failure?.let { onFailure(it) }
             }
         },
         enabled = enabled,
@@ -328,9 +355,11 @@ private fun TestAlertButton(
     }
 }
 
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
+fun SettingsScreen(onBack: () -> Unit) {
+    val context = LocalContext.current
     val prefs = remember { AppPreferences(context) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -349,8 +378,7 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
     var barkLevel by remember { mutableStateOf(prefs.barkLevel) }
     var serviceMenuExpanded by remember { mutableStateOf(false) }
     var barkLevelMenuExpanded by remember { mutableStateOf(false) }
-    var pushMethod by remember { mutableStateOf(prefs.pushMethod) }
-    var pushMenuExpanded by remember { mutableStateOf(false) }
+    var alertRoutes by remember { mutableStateOf(prefs.alertRoutes) }
     var smtpHost by remember { mutableStateOf(prefs.smtpHost) }
     var smtpPortStr by remember { mutableStateOf(prefs.smtpPort.toString()) }
     var smtpUser by remember { mutableStateOf(prefs.smtpUsername) }
@@ -359,9 +387,11 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
     var smtpTo by remember { mutableStateOf(prefs.smtpTo) }
     var lowThreshold by remember { mutableFloatStateOf(prefs.lowBatteryThreshold.toFloat()) }
     var checkInterval by remember { mutableIntStateOf(prefs.checkIntervalMinutes) }
+    var alertRepeat by remember { mutableIntStateOf(prefs.alertRepeatMinutes) }
 
     var useHyperOsBypass by remember { mutableStateOf(prefs.useHyperOsFocusBypass) }
     var enableDedup by remember { mutableStateOf(prefs.enableNotificationDedup) }
+    var debugIgnoreCooldown by remember { mutableStateOf(prefs.debugIgnoreAlertCooldown) }
     var enableLiveUpdate by remember { mutableStateOf(prefs.enableLiveUpdate) }
     var isSendingTestPush by remember { mutableStateOf(false) }
     var errorDialogMessage by remember { mutableStateOf<String?>(null) }
@@ -679,6 +709,30 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                             }
                         )
                     }
+
+                    // Debug bypass for the alert cooldown, so the alert path can be
+                    // fired repeatedly without waiting out the repeat interval.
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(text = "忽略提醒限制（调试）", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                            Text(
+                                text = "每次检测到低电量都推送，不受提醒频率限制",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                        }
+                        Switch(
+                            checked = debugIgnoreCooldown,
+                            onCheckedChange = {
+                                debugIgnoreCooldown = it
+                                prefs.debugIgnoreAlertCooldown = it
+                            }
+                        )
+                    }
                 }
             }
 
@@ -695,64 +749,48 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                             color = MaterialTheme.colorScheme.primary
                         )
 
-                        // Delivery route picker. One explicit choice replaces the
-                        // previous layout, where every channel's fields were on
-                        // screen at once and it was unclear which ones would fire.
-                        Box {
-                            OutlinedButton(
-                                onClick = { pushMenuExpanded = true },
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Text(
-                                    text = pushMethodLabel(pushMethod),
-                                    modifier = Modifier.weight(1f),
-                                    fontSize = 13.sp
-                                )
-                                Icon(
-                                    painter = painterResource(R.drawable.ic_arrow_drop_down),
-                                    contentDescription = "下拉菜单",
-                                    modifier = Modifier
-                                        .size(24.dp)
-                                        .rotate(if (pushMenuExpanded) 180f else 0f),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                            }
-                            DropdownMenu(
-                                expanded = pushMenuExpanded,
-                                onDismissRequest = { pushMenuExpanded = false },
-                                modifier = Modifier.fillMaxWidth(0.92f)
-                            ) {
-                                PUSH_OPTIONS.forEach { (value, label) ->
-                                    DropdownMenuItem(
-                                        text = { Text(label, fontSize = 13.sp) },
-                                        trailingIcon = {
-                                            RadioButton(
-                                                selected = pushMethod == value,
-                                                onClick = null
-                                            )
-                                        },
-                                        onClick = {
-                                            pushMethod = value
-                                            prefs.pushMethod = value
-                                            // Keep the legacy LAN flag in step, so
-                                            // anything still reading it agrees.
-                                            prefs.enableLanBroadcast = value == AppPreferences.PUSH_LAN
-                                            enableLanBroadcast = value == AppPreferences.PUSH_LAN
-                                            pushMenuExpanded = false
+                        // Multi-select routes: several may be enabled at once, so an
+                        // alert can go out over LAN and email together. Unchecking
+                        // everything is the "do not push" state, which removes the
+                        // need for a separate NONE option.
+                        Text(text = "发送通道（可多选）", fontWeight = FontWeight.Medium)
+                        PUSH_OPTIONS.forEach { (value, label) ->
+                            val checked = value in alertRoutes
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        val updated = if (checked) {
+                                            alertRoutes - value
+                                        } else {
+                                            alertRoutes + value
                                         }
-                                    )
-                                }
+                                        alertRoutes = updated
+                                        prefs.alertRoutes = updated
+                                        // Keep the legacy LAN flag in step, so
+                                        // anything still reading it agrees.
+                                        prefs.enableLanBroadcast =
+                                            AppPreferences.PUSH_LAN in updated
+                                        enableLanBroadcast =
+                                            AppPreferences.PUSH_LAN in updated
+                                    },
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Checkbox(checked = checked, onCheckedChange = null)
+                                Text(text = label, fontSize = 13.sp)
                             }
                         }
 
                         Text(
-                            text = when (pushMethod) {
-                                AppPreferences.PUSH_WEBHOOK ->
-                                    "预警会 POST 到下方地址。按 URL 自动匹配 Bark / Telegram 格式，其他地址使用通用 JSON。"
-                                AppPreferences.PUSH_EMAIL ->
+                            text = when {
+                                alertRoutes.isEmpty() ->
+                                    "未选择任何通道，预警只记录在应用日志中。"
+                                alertRoutes.size > 1 ->
+                                    "已选择 ${alertRoutes.size} 个通道，预警会同时发送到全部通道。"
+                                AppPreferences.PUSH_WEBHOOK in alertRoutes ->
+                                    "预警会 POST 到下方地址。"
+                                AppPreferences.PUSH_EMAIL in alertRoutes ->
                                     "预警通过 SMTP 发送到邮箱，使用隐式 TLS（465 端口）。"
-                                AppPreferences.PUSH_NONE ->
-                                    "不发送任何推送，预警只记录在应用日志中。"
                                 else ->
                                     "预警广播到同一 Wi-Fi 下的接收方设备。"
                             },
@@ -760,7 +798,7 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                             color = MaterialTheme.colorScheme.outline
                         )
 
-                        if (pushMethod == AppPreferences.PUSH_WEBHOOK) {
+                        if (AppPreferences.PUSH_WEBHOOK in alertRoutes) {
                             OutlinedTextField(
                                 value = webhookUrl,
                                 onValueChange = {
@@ -1032,10 +1070,37 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                             )
                         }
 
+                        // Repeat interval. "只提醒一次" is the same as stopping after
+                        // the first warning, which is what the option list makes
+                        // explicit instead of needing a second switch.
+                        Column {
+                            Text(text = "低电量提醒频率", fontWeight = FontWeight.Medium)
+                            Text(
+                                text = "电量持续低于临界值且未充电时，按此间隔再次提醒。",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.outline
+                            )
+                            Row(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.padding(top = 4.dp)
+                            ) {
+                                ALERT_REPEAT_OPTIONS.forEach { (minutes, label) ->
+                                    FilterChip(
+                                        selected = alertRepeat == minutes,
+                                        onClick = {
+                                            alertRepeat = minutes
+                                            prefs.alertRepeatMinutes = minutes
+                                        },
+                                        label = { Text(label) }
+                                    )
+                                }
+                            }
+                        }
+
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
 
                         // ---------------- 邮件推送 (SMTP) ----------------
-                        if (pushMethod == AppPreferences.PUSH_EMAIL) {
+                        if (AppPreferences.PUSH_EMAIL in alertRoutes) {
                         Text(text = "邮件推送", fontWeight = FontWeight.Medium)
                         Text(
                             text = "将预警发到邮箱。固定使用隐式 TLS（465 端口）",
@@ -1161,7 +1226,7 @@ fun SettingsScreen(onBack: () -> Unit) {    val context = LocalContext.current
                         }
 
                         TestAlertButton(
-                            pushMethod = pushMethod,
+                            alertRoutes = alertRoutes,
                             webhookUrl = webhookUrl,
                             webhookMethod = webhookMethod,
                             webhookHeaders = webhookHeaders,

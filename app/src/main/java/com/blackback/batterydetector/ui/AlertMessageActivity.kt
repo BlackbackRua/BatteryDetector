@@ -133,14 +133,11 @@ fun AlertMessageScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val prefs = remember { AppPreferences(context) }
 
-    // Open on whichever route the push settings are actually using, so the page
-    // starts where the user is most likely to be editing. Falls back to the first
-    // route when the current push method has no editable message (NONE).
+    // Open on the first enabled route, so the page starts somewhere the user is
+    // likely to be editing. Falls back to the first route when no channel is on.
     var route by remember {
-        val current = prefs.pushMethod
-        mutableStateOf(
-            if (MESSAGE_ROUTES.any { it.first == current }) current else MESSAGE_ROUTES.first().first
-        )
+        val enabled = MESSAGE_ROUTES.map { it.first }.filter { it in prefs.alertRoutes }
+        mutableStateOf(enabled.firstOrNull() ?: MESSAGE_ROUTES.first().first)
     }
     var text by remember { mutableStateOf(prefs.alertMessageTemplate(route)) }
     var titleText by remember { mutableStateOf(prefs.alertTitleTemplate(route)) }

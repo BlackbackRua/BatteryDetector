@@ -59,15 +59,33 @@ class AppPreferences(context: Context) {
         set(value) = prefs.edit().putString(KEY_BARK_LEVEL, value).apply()
 
     /**
-     * Which delivery route the alert uses.
+     * Routes an alert is delivered over; any combination may be enabled.
      *
-     * One of [PUSH_LAN], [PUSH_WEBHOOK], [PUSH_EMAIL], [PUSH_NONE]. A single choice
-     * keeps the settings screen understandable; previously every configured channel
-     * fired at once, which made it hard to tell what was actually enabled.
+     * Stored as a comma-separated list. An empty selection means no push at all,
+     * which replaces the old explicit "NONE" choice - leaving every box unchecked
+     * says the same thing without a dedicated option.
+     *
+     * Falls back to the older single-value key so an upgrade keeps the route the
+     * user had already chosen.
      */
-    var pushMethod: String
-        get() = prefs.getString(KEY_PUSH_METHOD, PUSH_LAN) ?: PUSH_LAN
-        set(value) = prefs.edit().putString(KEY_PUSH_METHOD, value).apply()
+    var alertRoutes: Set<String>
+        get() {
+            val stored = prefs.getStringSet(KEY_ALERT_ROUTES, null)
+            if (stored != null) return stored
+            val legacy = prefs.getString(KEY_PUSH_METHOD, null)
+            return when (legacy) {
+                PUSH_WEBHOOK -> setOf(PUSH_WEBHOOK)
+                PUSH_EMAIL -> setOf(PUSH_EMAIL)
+                // The retired single-route "NONE" value maps to no routes.
+                "NONE" -> emptySet()
+                // No stored preference at all: keep the original default.
+                null -> setOf(PUSH_LAN)
+                else -> setOf(PUSH_LAN)
+            }
+        }
+        set(value) {
+            prefs.edit().putStringSet(KEY_ALERT_ROUTES, value).apply()
+        }
 
     // --- SMTP / email alert route -------------------------------------------
     //
@@ -232,9 +250,38 @@ class AppPreferences(context: Context) {
         get() = prefs.getBoolean(KEY_USE_ROOT, false)
         set(value) = prefs.edit().putBoolean(KEY_USE_ROOT, value).apply()
 
-    var hasNotifiedLowBattery: Boolean
-        get() = prefs.getBoolean(KEY_HAS_NOTIFIED, false)
-        set(value) = prefs.edit().putBoolean(KEY_HAS_NOTIFIED, value).apply()
+    /**
+     * Minutes between repeat low-battery alerts; 0 means "alert once".
+     *
+     * While the battery stays below the threshold and is not charging, the alert is
+     * re-sent once this much time has passed. Setting 0 disables the repeat, which is
+     * the same as stopping after the first warning.
+     */
+    var alertRepeatMinutes: Int
+        get() = prefs.getInt(KEY_ALERT_REPEAT_MINUTES, 0)
+        set(value) = prefs.edit().putInt(KEY_ALERT_REPEAT_MINUTES, value).apply()
+
+    /**
+     * When the last low-battery alert was actually delivered, or 0 for "never".
+     *
+     * Replaces a plain boolean: a boolean could say that an alert happened but not
+     * when, so it could not support a repeat interval. Cleared when the battery
+     * recovers, which is what re-arms the next alert.
+     */
+    var lastAlertAt: Long
+        get() = prefs.getLong(KEY_LAST_ALERT_AT, 0L)
+        set(value) = prefs.edit().putLong(KEY_LAST_ALERT_AT, value).apply()
+
+    /**
+     * Debug switch: ignore the repeat interval so every check alerts.
+     *
+     * Exists so the alert path can be exercised repeatedly without waiting out a
+     * cooldown. Off by default; while on, the log says so, because an alert firing
+     * every check would otherwise look like a bug.
+     */
+    var debugIgnoreAlertCooldown: Boolean
+        get() = prefs.getBoolean(KEY_DEBUG_IGNORE_ALERT_COOLDOWN, false)
+        set(value) = prefs.edit().putBoolean(KEY_DEBUG_IGNORE_ALERT_COOLDOWN, value).apply()
 
     var lastCheckTime: Long
         get() = prefs.getLong(KEY_LAST_CHECK_TIME, 0L)
@@ -305,7 +352,9 @@ class AppPreferences(context: Context) {
         private const val KEY_CHECK_INTERVAL = "check_interval"
         private const val KEY_SERVICE_ENABLED = "service_enabled"
         private const val KEY_USE_ROOT = "use_root"
-        private const val KEY_HAS_NOTIFIED = "has_notified"
+        private const val KEY_ALERT_REPEAT_MINUTES = "alert_repeat_minutes"
+        private const val KEY_LAST_ALERT_AT = "last_alert_at"
+        private const val KEY_DEBUG_IGNORE_ALERT_COOLDOWN = "debug_ignore_alert_cooldown"
         private const val KEY_LAST_CHECK_TIME = "last_check_time"
         private const val KEY_LAST_BATTERY_LEVEL = "last_battery_level"
         private const val KEY_DEVICE_ROLE = "device_role"
@@ -328,12 +377,14 @@ class AppPreferences(context: Context) {
         private const val KEY_WEBHOOK_CUSTOM_BODY = "webhook_custom_body"
         private const val KEY_BARK_SOUND = "bark_sound"
         private const val KEY_BARK_LEVEL = "bark_level"
-        private const val KEY_PUSH_METHOD = "push_method"
+        private const val KEY_ALERT_ROUTES = "alert_routes"
 
         /** Push route identifiers, also used as the stored preference values. */
         const val PUSH_LAN = "LAN"
         const val PUSH_WEBHOOK = "WEBHOOK"
         const val PUSH_EMAIL = "EMAIL"
-        const val PUSH_NONE = "NONE"
+
+        /** Legacy single-route key, still read so an upgrade keeps the old choice. */
+        private const val KEY_PUSH_METHOD = "push_method"
     }
 }

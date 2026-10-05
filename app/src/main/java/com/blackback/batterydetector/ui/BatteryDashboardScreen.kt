@@ -33,7 +33,6 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import com.blackback.batterydetector.R
 import com.blackback.batterydetector.data.AppPreferences
-import com.blackback.batterydetector.data.BatteryInfo
 import com.blackback.batterydetector.data.LogRepository
 import com.blackback.batterydetector.network.LanSyncEngine
 import com.blackback.batterydetector.root.RootBatteryManager
@@ -64,7 +63,6 @@ fun BatteryDashboardScreen() {
     var useRootMode by remember { mutableStateOf(prefs.useRootMode) }
 
     // Runtime state
-    var currentBatteryInfo by remember { mutableStateOf<BatteryInfo?>(null) }
     var localIpAddress by remember { mutableStateOf("获取中...") }
     var lastRefreshTimeStr by remember { mutableStateOf("未刷新") }
     var showBatteryOptimizationPrompt by remember { mutableStateOf(false) }
@@ -94,10 +92,24 @@ fun BatteryDashboardScreen() {
             }
             val ip = LanSyncEngine.getLocalIpAddress(context)
             val nowStr = timeFormat.format(Date())
+
+            // Published through the service rather than kept locally: the card
+            // renders the service's flow whenever it has a value, so a private copy
+            // made the refresh look like it did nothing.
+            BatteryMonitorService.publishBatteryInfo(context, info)
+
+            LogRepository.addLog(
+                "手动刷新: ${info.level}% (${if (info.isCharging) "充电中" else "未充电"}), " +
+                    "来源: ${info.source}"
+            )
+
+            // Same rules the monitoring loop uses, so refreshing a battery that is
+            // already below the threshold warns instead of only updating the display.
+            BatteryMonitorService.evaluateLowBatteryAlert(context, info)
+
             withContext(Dispatchers.Main) {
-                currentBatteryInfo = info
-                localIpAddress = ip
                 lastRefreshTimeStr = nowStr
+                localIpAddress = ip
             }
         }
     }
@@ -217,7 +229,9 @@ fun BatteryDashboardScreen() {
                         color = MaterialTheme.colorScheme.primary
                     )
 
-                    val displayInfo = latestInfoState ?: currentBatteryInfo
+                    // The service's flow is the single source of truth; a manual
+                    // refresh publishes into it rather than into a private copy.
+                    val displayInfo = latestInfoState
                     val batteryLevel = displayInfo?.level ?: -1
 
                     Row(

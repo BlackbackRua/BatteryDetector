@@ -106,8 +106,8 @@ class BatteryMonitorService : Service() {
     /**
      * Reads the battery and fires an alert when it is low.
      *
-     * Suspending because alert delivery waits for every configured channel to
-     * report back before deciding whether the cooldown flag may be set.
+     * Suspending because alert delivery waits for the configured channels to report
+     * back before the cooldown timestamp may be set.
      */
     suspend fun performBatteryCheck() {
         val batteryInfo = if (prefs.useRootMode) {
@@ -117,133 +117,18 @@ class BatteryMonitorService : Service() {
             RootBatteryManager.getBatteryInfoViaStandardApi(this)
         }
 
-        _latestBatteryInfo.value = batteryInfo
-        prefs.lastCheckTime = System.currentTimeMillis()
-        prefs.lastBatteryLevel = batteryInfo.level
+        // Routed through the shared write path so the alert rules below and a manual
+        // refresh from the dashboard cannot diverge.
+        publishBatteryInfo(this, batteryInfo)
 
         val logMsg = "检测电量: ${batteryInfo.level}% (${if (batteryInfo.isCharging) "充电中" else "未充电"}), 来源: ${batteryInfo.source}"
         LogRepository.addLog(logMsg)
 
         updateNotification("当前电量: ${batteryInfo.level}% (${if (batteryInfo.isCharging) "充电中" else "放电中"})")
 
-        // 状态判定逻辑
-        val threshold = prefs.lowBatteryThreshold
-        val isCharging = batteryInfo.isCharging
-
-        if (isCharging || batteryInfo.level > threshold + 5) {
-            if (prefs.hasNotifiedLowBattery) {
-                prefs.hasNotifiedLowBattery = false
-                LogRepository.addLog("设备已恢复充电或电量高于临界值，重置推状态")
-            }
-        } else if (batteryInfo.level <= threshold) {
-            if (!prefs.hasNotifiedLowBattery) {
-                LogRepository.addLog("触发低电量预警 (当前 ${batteryInfo.level}% <= 设定 ${threshold}%)，准备推送通知...", isError = true)
-                dispatchAlert(batteryInfo.level, isTest = false) { success ->
-                    if (success) prefs.hasNotifiedLowBattery = true
-                }
-            } else {
-                LogRepository.addLog("电量持续偏低 (${batteryInfo.level}%)，已处于推送冷却状态")
-            }
-        }
-    }
-
-    /**
-     * Delivers a low-battery alert over the route chosen in settings.
-     *
-     * The route used to be implicit: every configured channel fired, with an
-     * `if / else if` that meant a configured Webhook silently suppressed the LAN
-     * broadcast. Picking one route explicitly removes both the surprise and the
-     * ambiguity about what is actually enabled.
-     *
-     * Runs on a background dispatcher and blocks until the channel reports, so the
-     * caller's "do not re-alert" flag is only set on a real success.
-     */
-    private suspend fun dispatchAlert(batteryLevel: Int, isTest: Boolean, onResult: (Boolean) -> Unit) {
-        // A configured template applies to real alerts too, not just test sends.
-        // Title and body are resolved separately so each can be customised on its own.
-        val title = prefs.resolveAlertTitle(
-            route = prefs.pushMethod,
-            isTest = isTest,
-            deviceName = prefs.deviceName,
-            batteryLevel = batteryLevel
-        )
-        val message = prefs.resolveAlertMessage(
-            route = prefs.pushMethod,
-            isTest = isTest,
-            deviceName = prefs.deviceName,
-            batteryLevel = batteryLevel
-        )
-
-        when (prefs.pushMethod) {
-            AppPreferences.PUSH_WEBHOOK -> {
-                val webhook = prefs.webhookUrl.trim()
-                if (webhook.isEmpty()) {
-                    LogRepository.addLog("推送方式为 Webhook，但地址未配置", isError = true)
-                    onResult(false)
-                    return
-                }
-                val ok = suspendCancellableCoroutine<Boolean> { cont ->
-                    RemoteNotifier.sendNotification(
-                        webhookUrl = webhook,
-                        deviceName = prefs.deviceName,
-                        batteryLevel = batteryLevel,
-                        isTest = isTest,
-                        method = prefs.webhookMethod,
-                        headers = prefs.webhookHeaders,
-                        service = prefs.webhookService,
-                        customBody = prefs.webhookCustomBody,
-                        barkSound = prefs.barkSound,
-                        barkLevel = prefs.barkLevel,
-                        titleOverride = title,
-                        messageOverride = message
-                    ) { success, _ -> if (cont.isActive) cont.resume(success) }
-                }
-                onResult(ok)
-            }
-
-            AppPreferences.PUSH_EMAIL -> {
-                val config = SmtpMailer.configFrom(prefs)
-                if (config == null) {
-                    LogRepository.addLog("推送方式为邮件，但 SMTP 未配置完整", isError = true)
-                    onResult(false)
-                    return
-                }
-                val result = withContext(Dispatchers.IO) {
-                    prefs.sendAlertEmail(
-                        config = config,
-                        isTest = isTest,
-                        deviceName = prefs.deviceName,
-                        batteryLevel = batteryLevel
-                    )
-                }
-                LogRepository.addLog(
-                    if (result.success) "邮件推送成功" else result.message,
-                    isError = !result.success,
-                    isPushEvent = result.success
-                )
-                onResult(result.success)
-            }
-
-            AppPreferences.PUSH_NONE -> {
-                LogRepository.addLog("推送方式已关闭，预警仅记录在日志中", isError = true)
-                onResult(false)
-            }
-
-            else -> {
-                val ok = suspendCancellableCoroutine<Boolean> { cont ->
-                    LanSyncEngine.sendUdpBroadcast(
-                        context = this@BatteryMonitorService,
-                        port = prefs.lanPort,
-                        deviceName = prefs.deviceName,
-                        batteryLevel = batteryLevel,
-                        message = message,
-                        isTest = isTest,
-                        titleOverride = title
-                    ) { success, _ -> if (cont.isActive) cont.resume(success) }
-                }
-                onResult(ok)
-            }
-        }
+        // The alert rules live in the companion so the dashboard's manual refresh can
+        // run exactly the same ones.
+        evaluateLowBatteryAlert(context = this, batteryInfo = batteryInfo)
     }
 
     private fun updateNotification(contentText: String) {
@@ -340,6 +225,214 @@ class BatteryMonitorService : Service() {
             // onStartCommand never runs and nothing would clear the flag.
             AppPreferences(context).isServiceEnabled = false
             ServiceWatchdog.cancel(context)
+        }
+
+        /**
+         * Publishes a battery reading as the current one.
+         *
+         * The single write path for this state, used both by the monitoring loop and
+         * by the dashboard's manual refresh. The dashboard used to keep its own copy,
+         * which the card never displayed once the service was running, so pressing
+         * refresh appeared to do nothing.
+         */
+        fun publishBatteryInfo(context: Context, info: BatteryInfo) {
+            _latestBatteryInfo.value = info
+            val prefs = AppPreferences(context)
+            prefs.lastCheckTime = System.currentTimeMillis()
+            prefs.lastBatteryLevel = info.level
+        }
+
+        /**
+         * Whether a low-battery alert is due, given when the last one was delivered.
+         *
+         * Pure so it can be tested: this rule is easy to get subtly wrong, and a
+         * mistake means either silence while the battery dies or a stream of
+         * duplicate warnings. A zero [lastAlertAt] means no alert has been delivered
+         * since the battery last recovered.
+         */
+        fun isAlertDue(lastAlertAt: Long, now: Long, repeatMinutes: Int): Boolean {
+            if (lastAlertAt == 0L) return true
+            // 0 means "alert once": the recorded alert suppresses everything until
+            // the battery recovers and clears it.
+            if (repeatMinutes <= 0) return false
+            return now - lastAlertAt >= repeatMinutes * 60_000L
+        }
+
+        /** Human-readable reason an alert is being withheld, for the log. */
+        fun alertSuppressionReason(lastAlertAt: Long, now: Long, repeatMinutes: Int): String {
+            if (repeatMinutes <= 0) return "已设置为只提醒一次"
+            val elapsedMinutes = (now - lastAlertAt) / 60_000L
+            val remaining = (repeatMinutes - elapsedMinutes).coerceAtLeast(1)
+            return "距离下次提醒还需 $remaining 分钟"
+        }
+
+        /**
+         * Applies the low-battery rules to a reading and dispatches an alert if due.
+         *
+         * In the companion rather than an instance method so the dashboard's manual
+         * refresh can run exactly the same rules; otherwise a refresh would display a
+         * low level without ever warning about it.
+         */
+        suspend fun evaluateLowBatteryAlert(context: Context, batteryInfo: BatteryInfo) {
+            val prefs = AppPreferences(context)
+            val threshold = prefs.lowBatteryThreshold
+
+            if (batteryInfo.isCharging || batteryInfo.level > threshold + 5) {
+                // Recovery re-arms the alert. Compared against the last *alert*
+                // rather than a boolean, because a repeat interval needs a time.
+                if (prefs.lastAlertAt != 0L) {
+                    prefs.lastAlertAt = 0L
+                    LogRepository.addLog("设备已恢复充电或电量高于临界值，重置推送状态")
+                }
+                return
+            }
+
+            if (batteryInfo.level > threshold) return
+
+            val repeatMinutes = prefs.alertRepeatMinutes
+            val lastAlertAt = prefs.lastAlertAt
+            val now = System.currentTimeMillis()
+
+            // Debug bypass: send on every check regardless of the interval, so the
+            // alert path can be exercised without waiting out a cooldown. The log
+            // records that it was the bypass, otherwise a notification per check
+            // would look like a fault.
+            val ignoreCooldown = prefs.debugIgnoreAlertCooldown
+            if (!ignoreCooldown && !isAlertDue(lastAlertAt, now, repeatMinutes)) {
+                LogRepository.addLog(
+                    "电量持续偏低 (${batteryInfo.level}%)，" +
+                        alertSuppressionReason(lastAlertAt, now, repeatMinutes)
+                )
+                return
+            }
+
+            val reason = when {
+                ignoreCooldown -> "调试模式已忽略提醒限制"
+                lastAlertAt == 0L -> "首次"
+                else -> "距上次已超过 $repeatMinutes 分钟"
+            }
+            LogRepository.addLog(
+                "触发低电量预警 (当前 ${batteryInfo.level}% <= 设定 $threshold%，$reason)，准备推送通知...",
+                isError = true
+            )
+            dispatchAlert(context, batteryInfo.level, isTest = false) { success ->
+                if (success) prefs.lastAlertAt = System.currentTimeMillis()
+            }
+        }
+
+        /**
+         * Delivers a low-battery alert over every enabled route.
+         *
+         * Several routes may be selected, so a LAN broadcast and an email can fire for
+         * the same alert. The alert counts as delivered if any route succeeded;
+         * per-route outcomes are logged so a partial failure stays visible instead of
+         * hiding behind an overall success.
+         */
+        private suspend fun dispatchAlert(
+            context: Context,
+            batteryLevel: Int,
+            isTest: Boolean,
+            onResult: (Boolean) -> Unit
+        ) {
+            val prefs = AppPreferences(context)
+            val routes = prefs.alertRoutes
+            if (routes.isEmpty()) {
+                LogRepository.addLog("未选择任何推送通道，预警仅记录在日志中", isError = true)
+                onResult(false)
+                return
+            }
+
+            var anySuccess = false
+
+            // Webhook before email before LAN, matching the order in settings, so the
+            // log reads predictably.
+            val ordered = listOf(
+                AppPreferences.PUSH_WEBHOOK,
+                AppPreferences.PUSH_EMAIL,
+                AppPreferences.PUSH_LAN
+            ).filter { it in routes }
+
+            for (route in ordered) {
+                // Resolved per route: each keeps its own title and body template.
+                val title = prefs.resolveAlertTitle(
+                    route = route,
+                    isTest = isTest,
+                    deviceName = prefs.deviceName,
+                    batteryLevel = batteryLevel
+                )
+                val message = prefs.resolveAlertMessage(
+                    route = route,
+                    isTest = isTest,
+                    deviceName = prefs.deviceName,
+                    batteryLevel = batteryLevel
+                )
+
+                when (route) {
+                    AppPreferences.PUSH_WEBHOOK -> {
+                        val webhook = prefs.webhookUrl.trim()
+                        if (webhook.isEmpty()) {
+                            LogRepository.addLog("Webhook 通道已启用，但地址未配置，已跳过", isError = true)
+                            continue
+                        }
+                        val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                            RemoteNotifier.sendNotification(
+                                webhookUrl = webhook,
+                                deviceName = prefs.deviceName,
+                                batteryLevel = batteryLevel,
+                                isTest = isTest,
+                                method = prefs.webhookMethod,
+                                headers = prefs.webhookHeaders,
+                                service = prefs.webhookService,
+                                customBody = prefs.webhookCustomBody,
+                                barkSound = prefs.barkSound,
+                                barkLevel = prefs.barkLevel,
+                                titleOverride = title,
+                                messageOverride = message
+                            ) { success, _ -> if (cont.isActive) cont.resume(success) }
+                        }
+                        if (ok) anySuccess = true
+                    }
+
+                    AppPreferences.PUSH_EMAIL -> {
+                        val config = SmtpMailer.configFrom(prefs)
+                        if (config == null) {
+                            LogRepository.addLog("邮件通道已启用，但 SMTP 未配置完整，已跳过", isError = true)
+                            continue
+                        }
+                        val result = withContext(Dispatchers.IO) {
+                            prefs.sendAlertEmail(
+                                config = config,
+                                isTest = isTest,
+                                deviceName = prefs.deviceName,
+                                batteryLevel = batteryLevel
+                            )
+                        }
+                        LogRepository.addLog(
+                            if (result.success) "邮件推送成功" else result.message,
+                            isError = !result.success,
+                            isPushEvent = result.success
+                        )
+                        if (result.success) anySuccess = true
+                    }
+
+                    else -> {
+                        val ok = suspendCancellableCoroutine<Boolean> { cont ->
+                            LanSyncEngine.sendUdpBroadcast(
+                                context = context,
+                                port = prefs.lanPort,
+                                deviceName = prefs.deviceName,
+                                batteryLevel = batteryLevel,
+                                message = message,
+                                isTest = isTest,
+                                titleOverride = title
+                            ) { success, _ -> if (cont.isActive) cont.resume(success) }
+                        }
+                        if (ok) anySuccess = true
+                    }
+                }
+            }
+
+            onResult(anySuccess)
         }
     }
 }
