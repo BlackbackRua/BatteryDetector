@@ -268,7 +268,7 @@ class BatteryMonitorService : Service() {
          * Pure so it can be tested: this rule is easy to get subtly wrong, and a
          * mistake means either silence while the battery dies or a stream of
          * duplicate warnings. A zero [lastAlertAt] means no alert has been delivered
-         * since the battery last recovered.
+         * on this route since the battery last recovered.
          */
         fun isAlertDue(lastAlertAt: Long, now: Long, repeatMinutes: Int): Boolean {
             if (lastAlertAt == 0L) return true
@@ -287,6 +287,29 @@ class BatteryMonitorService : Service() {
         }
 
         /**
+         * Picks the routes that are due, each judged on its own interval.
+         *
+         * Pure so per-channel scheduling can be tested without a Context. The whole
+         * point of per-route intervals is that a route which already fired must not
+         * hold back one that has not, and that separation is what the tests pin.
+         *
+         * [lastAlertAtByRoute] holds 0 for a route that has not fired since the
+         * battery last recovered.
+         */
+        fun dueRoutes(
+            routes: Collection<String>,
+            lastAlertAtByRoute: Map<String, Long>,
+            repeatMinutesByRoute: Map<String, Int>,
+            now: Long
+        ): List<String> = routes.filter { route ->
+            isAlertDue(
+                lastAlertAt = lastAlertAtByRoute[route] ?: 0L,
+                now = now,
+                repeatMinutes = repeatMinutesByRoute[route] ?: 0
+            )
+        }
+
+        /**
          * Applies the low-battery rules to a reading and dispatches an alert if due.
          *
          * In the companion rather than an instance method so the dashboard's manual
@@ -298,10 +321,10 @@ class BatteryMonitorService : Service() {
             val threshold = prefs.lowBatteryThreshold
 
             if (batteryInfo.isCharging || batteryInfo.level > threshold + 5) {
-                // Recovery re-arms the alert. Compared against the last *alert*
-                // rather than a boolean, because a repeat interval needs a time.
-                if (prefs.lastAlertAt != 0L) {
-                    prefs.lastAlertAt = 0L
+                // Recovery re-arms every route. Each keeps its own timestamp, so all
+                // of them are cleared together.
+                if (prefs.hasAnyAlertOnRecord()) {
+                    prefs.clearAllLastAlertAt()
                     LogRepository.addLog("设备已恢复充电或电量高于临界值，重置推送状态")
                 }
                 return
@@ -309,60 +332,79 @@ class BatteryMonitorService : Service() {
 
             if (batteryInfo.level > threshold) return
 
-            val repeatMinutes = prefs.alertRepeatMinutes
-            val lastAlertAt = prefs.lastAlertAt
             val now = System.currentTimeMillis()
-
-            // Debug bypass: send on every check regardless of the interval, so the
-            // alert path can be exercised without waiting out a cooldown. The log
-            // records that it was the bypass, otherwise a notification per check
-            // would look like a fault.
             val ignoreCooldown = prefs.debugIgnoreAlertCooldown
-            if (!ignoreCooldown && !isAlertDue(lastAlertAt, now, repeatMinutes)) {
-                LogRepository.addLog(
-                    "电量持续偏低 (${batteryInfo.level}%)，" +
-                        alertSuppressionReason(lastAlertAt, now, repeatMinutes)
+
+            // Each route is judged on its own clock: a LAN popup may be wanted every
+            // few minutes while the same alert should reach an inbox only once. A
+            // shared timer let whichever route fired first hold the others back.
+            val due = if (ignoreCooldown) {
+                prefs.alertRoutes.toList()
+            } else {
+                dueRoutes(
+                    routes = prefs.alertRoutes,
+                    lastAlertAtByRoute = prefs.alertRoutes.associateWith { prefs.lastAlertAt(it) },
+                    repeatMinutesByRoute = prefs.alertRoutes.associateWith {
+                        prefs.alertRepeatMinutes(it)
+                    },
+                    now = now
                 )
+            }
+
+            if (due.isEmpty()) {
+                val detail = prefs.alertRoutes.joinToString("; ") { route ->
+                    "$route ${alertSuppressionReason(prefs.lastAlertAt(route), now, prefs.alertRepeatMinutes(route))}"
+                }
+                LogRepository.addLog("电量持续偏低 (${batteryInfo.level}%)，$detail")
                 return
             }
 
-            val reason = when {
-                ignoreCooldown -> "调试模式已忽略提醒限制"
-                lastAlertAt == 0L -> "首次"
-                else -> "距上次已超过 $repeatMinutes 分钟"
+            val reason = if (ignoreCooldown) {
+                "调试模式已忽略提醒限制"
+            } else {
+                due.joinToString("、") { route ->
+                    val last = prefs.lastAlertAt(route)
+                    if (last == 0L) "$route 首次" else "$route 距上次已超过 ${prefs.alertRepeatMinutes(route)} 分钟"
+                }
             }
             LogRepository.addLog(
                 "触发低电量预警 (当前 ${batteryInfo.level}% <= 设定 $threshold%，$reason)，准备推送通知...",
                 isError = true
             )
-            dispatchAlert(context, batteryInfo.level, isTest = false) { success ->
-                if (success) prefs.lastAlertAt = System.currentTimeMillis()
+            dispatchAlert(context, batteryInfo.level, isTest = false, routes = due) { delivered ->
+                // Only the routes that actually succeeded get their clock stamped, so
+                // a failing channel retries on the next check instead of being treated
+                // as delivered.
+                val stamp = System.currentTimeMillis()
+                for (route in delivered) prefs.setLastAlertAt(route, stamp)
             }
         }
 
         /**
-         * Delivers a low-battery alert over every enabled route.
+         * Delivers a low-battery alert over the given routes.
          *
-         * Several routes may be selected, so a LAN broadcast and an email can fire for
-         * the same alert. The alert counts as delivered if any route succeeded;
-         * per-route outcomes are logged so a partial failure stays visible instead of
-         * hiding behind an overall success.
+         * [routes] is passed in rather than read here, because each route has its own
+         * repeat interval: some may be due while others are still cooling down, so the
+         * caller decides which ones this round covers.
+         *
+         * Reports the routes that actually succeeded, so only those get their clock
+         * stamped and a failing channel retries on the next check.
          */
         private suspend fun dispatchAlert(
             context: Context,
             batteryLevel: Int,
             isTest: Boolean,
-            onResult: (Boolean) -> Unit
+            routes: Collection<String>,
+            onResult: (List<String>) -> Unit
         ) {
             val prefs = AppPreferences(context)
-            val routes = prefs.alertRoutes
             if (routes.isEmpty()) {
                 LogRepository.addLog("未选择任何推送通道，预警仅记录在日志中", isError = true)
-                onResult(false)
+                onResult(emptyList())
                 return
             }
 
-            var anySuccess = false
+            val delivered = mutableListOf<String>()
 
             // Webhook before email before LAN, matching the order in settings, so the
             // log reads predictably.
@@ -410,7 +452,7 @@ class BatteryMonitorService : Service() {
                                 messageOverride = message
                             ) { success, _ -> if (cont.isActive) cont.resume(success) }
                         }
-                        if (ok) anySuccess = true
+                        if (ok) delivered.add(route)
                     }
 
                     AppPreferences.PUSH_EMAIL -> {
@@ -432,7 +474,7 @@ class BatteryMonitorService : Service() {
                             isError = !result.success,
                             isPushEvent = result.success
                         )
-                        if (result.success) anySuccess = true
+                        if (result.success) delivered.add(route)
                     }
 
                     else -> {
@@ -447,12 +489,12 @@ class BatteryMonitorService : Service() {
                                 titleOverride = title
                             ) { success, _ -> if (cont.isActive) cont.resume(success) }
                         }
-                        if (ok) anySuccess = true
+                        if (ok) delivered.add(route)
                     }
                 }
             }
 
-            onResult(anySuccess)
+            onResult(delivered)
         }
     }
 }

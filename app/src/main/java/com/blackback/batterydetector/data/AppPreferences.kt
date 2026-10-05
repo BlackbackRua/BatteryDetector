@@ -251,26 +251,50 @@ class AppPreferences(context: Context) {
         set(value) = prefs.edit().putBoolean(KEY_USE_ROOT, value).apply()
 
     /**
-     * Minutes between repeat low-battery alerts; 0 means "alert once".
+     * Minutes between repeat alerts on [route]; 0 means "alert once".
      *
-     * While the battery stays below the threshold and is not charging, the alert is
-     * re-sent once this much time has passed. Setting 0 disables the repeat, which is
-     * the same as stopping after the first warning.
+     * Per route rather than global: a channel that the user reads immediately - a
+     * LAN popup - is worth repeating every few minutes, while an email that would
+     * pile up in an inbox is usually wanted once. A single shared interval forced
+     * both to the same pace.
      */
-    var alertRepeatMinutes: Int
-        get() = prefs.getInt(KEY_ALERT_REPEAT_MINUTES, 0)
-        set(value) = prefs.edit().putInt(KEY_ALERT_REPEAT_MINUTES, value).apply()
+    fun alertRepeatMinutes(route: String): Int {
+        val stored = prefs.getInt(KEY_ALERT_REPEAT_PREFIX + route, -1)
+        if (stored >= 0) return stored
+        // Carry the old global value over, so an upgrade keeps the pace that was
+        // already configured instead of silently resetting it.
+        return prefs.getInt(KEY_ALERT_REPEAT_MINUTES, 0)
+    }
+
+    fun setAlertRepeatMinutes(route: String, value: Int) {
+        prefs.edit().putInt(KEY_ALERT_REPEAT_PREFIX + route, value).apply()
+    }
 
     /**
-     * When the last low-battery alert was actually delivered, or 0 for "never".
+     * When the last alert was delivered on [route], or 0 for "never".
      *
-     * Replaces a plain boolean: a boolean could say that an alert happened but not
-     * when, so it could not support a repeat interval. Cleared when the battery
-     * recovers, which is what re-arms the next alert.
+     * Per route so each channel keeps its own clock; a shared timestamp meant one
+     * channel firing would hold back every other channel's schedule. Cleared on
+     * recovery, which is what re-arms the next alert.
      */
-    var lastAlertAt: Long
-        get() = prefs.getLong(KEY_LAST_ALERT_AT, 0L)
-        set(value) = prefs.edit().putLong(KEY_LAST_ALERT_AT, value).apply()
+    fun lastAlertAt(route: String): Long = prefs.getLong(KEY_LAST_ALERT_PREFIX + route, 0L)
+
+    fun setLastAlertAt(route: String, value: Long) {
+        prefs.edit().putLong(KEY_LAST_ALERT_PREFIX + route, value).apply()
+    }
+
+    /** Clears every route's alert clock, re-arming them all. */
+    fun clearAllLastAlertAt() {
+        val editor = prefs.edit()
+        for (route in listOf(PUSH_LAN, PUSH_WEBHOOK, PUSH_EMAIL)) {
+            editor.putLong(KEY_LAST_ALERT_PREFIX + route, 0L)
+        }
+        editor.apply()
+    }
+
+    /** True when any route has an alert on record, i.e. the alert is armed off. */
+    fun hasAnyAlertOnRecord(): Boolean =
+        listOf(PUSH_LAN, PUSH_WEBHOOK, PUSH_EMAIL).any { lastAlertAt(it) != 0L }
 
     /**
      * Debug switch: ignore the repeat interval so every check alerts.
@@ -353,7 +377,8 @@ class AppPreferences(context: Context) {
         private const val KEY_SERVICE_ENABLED = "service_enabled"
         private const val KEY_USE_ROOT = "use_root"
         private const val KEY_ALERT_REPEAT_MINUTES = "alert_repeat_minutes"
-        private const val KEY_LAST_ALERT_AT = "last_alert_at"
+        private const val KEY_ALERT_REPEAT_PREFIX = "alert_repeat_"
+        private const val KEY_LAST_ALERT_PREFIX = "last_alert_at_"
         private const val KEY_DEBUG_IGNORE_ALERT_COOLDOWN = "debug_ignore_alert_cooldown"
         private const val KEY_LAST_CHECK_TIME = "last_check_time"
         private const val KEY_LAST_BATTERY_LEVEL = "last_battery_level"

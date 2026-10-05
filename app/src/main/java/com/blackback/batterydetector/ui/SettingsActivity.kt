@@ -186,6 +186,10 @@ private val ALERT_REPEAT_OPTIONS = listOf(
     60 to "1 小时"
 )
 
+/** Label for a repeat interval, for the per-channel heading. */
+private fun repeatLabel(minutes: Int): String =
+    ALERT_REPEAT_OPTIONS.firstOrNull { it.first == minutes }?.second ?: "$minutes 分钟"
+
 /**
  * Sends a test alert over every enabled route.
  *
@@ -388,7 +392,11 @@ fun SettingsScreen(onBack: () -> Unit) {
     var smtpTo by remember { mutableStateOf(prefs.smtpTo) }
     var lowThreshold by remember { mutableFloatStateOf(prefs.lowBatteryThreshold.toFloat()) }
     var checkInterval by remember { mutableIntStateOf(prefs.checkIntervalMinutes) }
-    var alertRepeat by remember { mutableIntStateOf(prefs.alertRepeatMinutes) }
+    var alertRepeatByRoute by remember {
+        mutableStateOf(
+            PUSH_OPTIONS.associate { (value, _) -> value to prefs.alertRepeatMinutes(value) }
+        )
+    }
 
     var useHyperOsBypass by remember { mutableStateOf(prefs.useHyperOsFocusBypass) }
     var enableDedup by remember { mutableStateOf(prefs.enableNotificationDedup) }
@@ -738,7 +746,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                         // alert can go out over LAN and email together. Unchecking
                         // everything is the "do not push" state, which removes the
                         // need for a separate NONE option.
-                        Text(text = "发送通道（可多选）", fontWeight = FontWeight.Medium)
+                        Text(text = "发送通道", fontWeight = FontWeight.Medium)
                         PUSH_OPTIONS.forEach { (value, label) ->
                             val checked = value in alertRoutes
                             Row(
@@ -914,7 +922,7 @@ fun SettingsScreen(onBack: () -> Unit) {
 
                                 WebhookRequestBuilder.SERVICE_CUSTOM -> {
                                     Text(
-                                        text = "自定义 JSON 请求体。可用占位符（字符串值需自己加引号）：" +
+                                        text = "自定义 JSON 请求体。可用占位符：" +
                                             "{{title}} {{message}} {{device}} {{battery}} {{timestamp}}",
                                         fontSize = 11.sp,
                                         color = MaterialTheme.colorScheme.outline
@@ -1044,30 +1052,44 @@ fun SettingsScreen(onBack: () -> Unit) {
                             )
                         }
 
-                        // Repeat interval. "只提醒一次" is the same as stopping after
-                        // the first warning, which is what the option list makes
-                        // explicit instead of needing a second switch.
+                        // Repeat interval, set per channel. A LAN popup is worth
+                        // repeating every few minutes; the same alert mailed to an
+                        // inbox usually is not. A single shared interval could not
+                        // express both, so the pace is chosen for each channel here
+                        // rather than once for all of them.
                         Column {
-                            Text(text = "低电量提醒频率", fontWeight = FontWeight.Medium)
+                            Text(text = "提醒频率", fontWeight = FontWeight.Medium)
                             Text(
-                                text = "电量持续低于临界值且未充电时，按此间隔再次提醒。",
+                                text = "电量持续低于临界值且未充电时，各通道按各自的间隔重复提醒。",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.outline
                             )
-                            FlowRow(
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                verticalArrangement = Arrangement.spacedBy(8.dp),
-                                modifier = Modifier.padding(top = 4.dp)
-                            ) {
-                                ALERT_REPEAT_OPTIONS.forEach { (minutes, label) ->
-                                    FilterChip(
-                                        selected = alertRepeat == minutes,
-                                        onClick = {
-                                            alertRepeat = minutes
-                                            prefs.alertRepeatMinutes = minutes
-                                        },
-                                        label = { Text(label) }
+                        }
+
+                        PUSH_OPTIONS.forEach { (value, label) ->
+                            if (value in alertRoutes) {
+                                Column {
+                                    Text(
+                                        text = "$label：${repeatLabel(alertRepeatByRoute[value] ?: 0)}",
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium
                                     )
+                                    FlowRow(
+                                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        ALERT_REPEAT_OPTIONS.forEach { (minutes, optionLabel) ->
+                                            FilterChip(
+                                                selected = (alertRepeatByRoute[value] ?: 0) == minutes,
+                                                onClick = {
+                                                    alertRepeatByRoute =
+                                                        alertRepeatByRoute + (value to minutes)
+                                                    prefs.setAlertRepeatMinutes(value, minutes)
+                                                },
+                                                label = { Text(optionLabel) }
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         }
