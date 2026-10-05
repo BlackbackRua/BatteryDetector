@@ -8,7 +8,7 @@ Webhook 或局域网广播发出预警；接收端设备会以系统通知的形
 ## 功能
 
 - **电量监控**：按设定间隔读取电量、电压、温度、充电状态。标准 API 与 root 两种来源。
-- **多种通知渠道**：可用局域网广播、Webhook、SMTP等多种推送方式。通知样式亦可自定义。
+- **多种通知渠道**：可用局域网、Webhook、SMTP等多种推送方式。通知样式亦可自定义。
 
 ## 构建
 
@@ -35,6 +35,3 @@ java.lang.IllegalAccessError: Class kotlin.sequences.d extended by class y41 is 
 ```
 
 原因是该优化重写了 `kotlinx.coroutines` 的内部类层次。
-
-## 已知问题
-小米超级岛即使在已授权shizuku的情况下仍大概率无法使用。对于小米设备，请考虑切换到实况通知或普通通知
