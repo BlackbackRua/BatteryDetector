@@ -12,6 +12,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -417,7 +418,7 @@ fun SettingsScreen(onBack: () -> Unit) {
      * Opens the app's notification settings page.
      *
      * Deliberately the app-level page rather than the per-channel one: this button
-     * is labelled as the app's notification settings, and the user needs to reach
+     * is labeled as the app's notification settings, and the user needs to reach
      * every channel (alerts, the foreground service notification, live updates) from
      * one place. The channel page also required the channel to already exist, which
      * is what produced a blank screen on ColorOS before the channel was created.
@@ -512,13 +513,20 @@ fun SettingsScreen(onBack: () -> Unit) {
                         singleLine = true
                     )
 
+                    // The LAN port lives here, with the device identity, because it is
+                    // how this device is addressed on the network. It applies to both
+                    // roles - the receiver listens on it and the sender scans it - so
+                    // it must stay visible whichever role is selected.
                     OutlinedTextField(
                         value = lanPortStr,
                         onValueChange = {
                             lanPortStr = it
                             it.toIntOrNull()?.let { port -> prefs.lanPort = port }
                         },
-                        label = { Text("端口") },
+                        label = { Text("局域网端口") },
+                        supportingText = {
+                            Text("收发双方需一致；接收端在此端口监听，发送端也扫描此端口。")
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true
                     )
@@ -603,7 +611,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 text = if (islandSupported) {
                                     "使用小米超级岛（实验性）"
                                 } else {
-                                    "使用小米超级岛（实验性）— 当前设备不可用"
+                                    "使用小米超级岛（实验性）"
                                 },
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium,
@@ -617,7 +625,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 text = if (islandSupported) {
                                     "仅在 HyperOS 3.0 版本验证可用，可能出现通知无法显示的情况。"
                                 } else {
-                                    "需要小米 HyperOS 3.0 及以上系统。"
+                                    "需要 HyperOS 3.0 及以上系统。"
                                 },
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.outline
@@ -710,29 +718,6 @@ fun SettingsScreen(onBack: () -> Unit) {
                         )
                     }
 
-                    // Debug bypass for the alert cooldown, so the alert path can be
-                    // fired repeatedly without waiting out the repeat interval.
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Column(modifier = Modifier.weight(1f)) {
-                            Text(text = "忽略提醒限制（调试）", fontSize = 13.sp, fontWeight = FontWeight.Medium)
-                            Text(
-                                text = "每次检测到低电量都推送，不受提醒频率限制",
-                                fontSize = 11.sp,
-                                color = MaterialTheme.colorScheme.outline
-                            )
-                        }
-                        Switch(
-                            checked = debugIgnoreCooldown,
-                            onCheckedChange = {
-                                debugIgnoreCooldown = it
-                                prefs.debugIgnoreAlertCooldown = it
-                            }
-                        )
-                    }
                 }
             }
 
@@ -984,31 +969,16 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 }
                             }
 
-                            Row(
+                            OutlinedTextField(
+                                value = webhookMethod,
+                                onValueChange = {
+                                    webhookMethod = it
+                                    prefs.webhookMethod = it
+                                },
+                                label = { Text("请求方法") },
                                 modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
-                            ) {
-                                OutlinedTextField(
-                                    value = webhookMethod,
-                                    onValueChange = {
-                                        webhookMethod = it
-                                        prefs.webhookMethod = it
-                                    },
-                                    label = { Text("请求方法") },
-                                    modifier = Modifier.weight(1f),
-                                    singleLine = true
-                                )
-                                OutlinedTextField(
-                                    value = lanPortStr,
-                                    onValueChange = {
-                                        lanPortStr = it
-                                        it.toIntOrNull()?.let { port -> prefs.lanPort = port }
-                                    },
-                                    label = { Text("局域网端口") },
-                                    modifier = Modifier.weight(1f),
-                                    singleLine = true
-                                )
-                            }
+                                singleLine = true
+                            )
 
                             OutlinedTextField(
                                 value = webhookHeaders,
@@ -1035,7 +1005,10 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 color = MaterialTheme.colorScheme.outline
                             )
 
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            FlowRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(4.dp)
+                            ) {
                                 SuggestionChip(
                                     onClick = {
                                         val example = "https://day.app/YOUR_BARK_KEY/"
@@ -1081,8 +1054,9 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.outline
                             )
-                            Row(
+                            FlowRow(
                                 horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp),
                                 modifier = Modifier.padding(top = 4.dp)
                             ) {
                                 ALERT_REPEAT_OPTIONS.forEach { (minutes, label) ->
@@ -1096,6 +1070,28 @@ fun SettingsScreen(onBack: () -> Unit) {
                                     )
                                 }
                             }
+                        }
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(text = "忽略提醒限制", fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                                Text(
+                                    text = "每次检测到低电量都推送，不受提醒频率限制",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.outline
+                                )
+                            }
+                            Switch(
+                                checked = debugIgnoreCooldown,
+                                onCheckedChange = {
+                                    debugIgnoreCooldown = it
+                                    prefs.debugIgnoreAlertCooldown = it
+                                }
+                            )
                         }
 
                         HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
