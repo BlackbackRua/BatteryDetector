@@ -141,7 +141,7 @@ class SettingsActivity : ComponentActivity() {
  * separate option would be a second way to say the same thing.
  */
 private val PUSH_OPTIONS = listOf(
-    AppPreferences.PUSH_LAN to "局域网广播",
+    AppPreferences.PUSH_LAN to "局域网",
     AppPreferences.PUSH_WEBHOOK to "Webhook 推送",
     AppPreferences.PUSH_EMAIL to "邮件推送"
 )
@@ -334,7 +334,7 @@ private fun TestAlertButton(
                                     isTest = true,
                                     titleOverride = perRouteTitle
                                 ) { success, msg ->
-                                    if (!success) failures += "局域网广播：$msg"
+                                    if (!success) failures += "局域网：$msg"
                                     if (cont.isActive) cont.resume(success)
                                 }
                             }
@@ -792,7 +792,8 @@ fun SettingsScreen(onBack: () -> Unit) {
                                 AppPreferences.PUSH_EMAIL in alertRoutes ->
                                     "预警通过 SMTP 发送到邮箱，使用隐式 TLS（465 端口）。"
                                 else ->
-                                    "预警广播到同一 Wi-Fi 下的接收方设备。"
+                                    "自动扫描同一 Wi-Fi 下的接收端并直接投递，无需填写 IP；" +
+                                        "可同时通知多个接收端。"
                             },
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.outline
@@ -1278,7 +1279,7 @@ fun SettingsScreen(onBack: () -> Unit) {
                             },
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            Text("广播低电量提醒到局域网设备", fontSize = 13.sp)
+                            Text("发送局域网测试消息", fontSize = 13.sp)
                         }
                     }
                 }

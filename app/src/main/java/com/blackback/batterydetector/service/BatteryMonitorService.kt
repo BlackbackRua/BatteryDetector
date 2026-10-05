@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
@@ -53,14 +54,33 @@ class BatteryMonitorService : Service() {
 
         if (prefs.deviceRole == AppPreferences.ROLE_RECEIVER) {
             val localIp = LanSyncEngine.getLocalIpAddress(this)
-            startForeground(NOTIFICATION_ID, buildNotification("局域网接收器运行中 (端口: ${prefs.lanPort})"))
+            startForegroundCompat("局域网接收器运行中 (端口: ${prefs.lanPort})")
             LogRepository.addLog("后台服务启动为【接收方模式】，IP: $localIp, 监听端口: ${prefs.lanPort}")
             LanSyncEngine.startReceiver(this, prefs.lanPort)
         } else {
-            startForeground(NOTIFICATION_ID, buildNotification("发送方服务运行中..."))
+            startForegroundCompat("发送方服务运行中...")
             LogRepository.addLog("后台服务启动为【发送方模式】")
             startMonitoringLoop()
         }
+    }
+
+    /**
+     * Promotes the service to the foreground, declaring its type.
+     *
+     * The type has to be passed to `startForeground`: on Android 14 and later a
+     * call that omits it while the manifest declares one raises
+     * `MissingForegroundServiceTypeException`, which kills the process outright.
+     * That is what made the receiver die moments after it started listening, and it
+     * looked exactly like a network or notification fault because the service had
+     * already logged that it was up.
+     */
+    private fun startForegroundCompat(text: String) {
+        val type = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
+        }
+        startForeground(NOTIFICATION_ID, buildNotification(text), type)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

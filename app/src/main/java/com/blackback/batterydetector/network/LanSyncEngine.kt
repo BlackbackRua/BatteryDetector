@@ -39,6 +39,18 @@ object LanSyncEngine {
 
     const val CHANNEL_ID = "lan_battery_receiver_channel_v4"
 
+    /**
+     * Path a sender probes to identify a receiver.
+     *
+     * A bare port check is not enough: any other service listening on the same port
+     * would look like a receiver. The path plus [DISCOVERY_APP_ID] in the reply is
+     * what makes the probe trustworthy.
+     */
+    const val DISCOVERY_PATH = "/batterydetector/ping"
+
+    /** Marker the receiver returns so a probe can confirm what answered. */
+    const val DISCOVERY_APP_ID = "BatteryDetector"
+
     /** Fixed ids so a repeat alert replaces the previous one instead of stacking. */
     private const val ALERT_NOTIFICATION_ID = 10010
     private const val TEST_NOTIFICATION_ID = 10011
@@ -213,14 +225,24 @@ object LanSyncEngine {
 
                 val bytes = json.toByteArray(Charsets.UTF_8)
 
+                // Discovery by unicast first, then the broadcast addresses.
+                //
+                // On a network that drops broadcast and multicast - client isolation,
+                // or an AP that suppresses broadcast airtime - the broadcast below
+                // never arrives, and it fails silently because a UDP send always
+                // appears to succeed. The unicast peers found by scanning are what
+                // actually gets the alert through there, and they are also what makes
+                // several receivers work at once: every discovered address is sent to.
+                val peers = PeerDiscovery.discover(context, port)
+
                 // Also make sure the Wi-Fi subnet is represented, in case the
                 // interface walk above found nothing usable.
-                val targets = LinkedHashSet(broadcastAddresses())
+                val broadcastTargets = LinkedHashSet(broadcastAddresses())
                 wifiPrefixLength(context)?.let { prefix ->
                     getLocalIpAddress(context).takeIf { it != "127.0.0.1" }?.let { ip ->
                         subnetBroadcast(ip, prefix)?.let { host ->
                             runCatching { InetAddress.getByName(host) }.getOrNull()
-                                ?.let { targets.add(it) }
+                                ?.let { broadcastTargets.add(it) }
                         }
                     }
                 }
@@ -228,12 +250,24 @@ object LanSyncEngine {
                 val socket = DatagramSocket()
                 socket.broadcast = true
                 var sentTo = 0
+                val unicastSentTo = mutableListOf<String>()
                 val failures = mutableListOf<String>()
 
-                for (target in targets) {
+                for (peer in peers) {
+                    val target = runCatching { InetAddress.getByName(peer.address) }.getOrNull()
+                    if (target == null) continue
                     try {
-                        val packet = DatagramPacket(bytes, bytes.size, target, port)
-                        socket.send(packet)
+                        socket.send(DatagramPacket(bytes, bytes.size, target, port))
+                        sentTo++
+                        unicastSentTo.add("${peer.deviceName}@${peer.address}")
+                    } catch (e: Exception) {
+                        failures += "${peer.address}: ${e.localizedMessage}"
+                    }
+                }
+
+                for (target in broadcastTargets) {
+                    try {
+                        socket.send(DatagramPacket(bytes, bytes.size, target, port))
                         sentTo++
                     } catch (e: Exception) {
                         failures += "${target.hostAddress}: ${e.localizedMessage}"
@@ -241,14 +275,50 @@ object LanSyncEngine {
                 }
                 socket.close()
 
+                // Nothing found can simply mean the receiver was mid-restart, so one
+                // forced rescan runs before giving up. The addresses actually reached
+                // are tracked separately: reporting the first, empty result made the
+                // log claim "0 receivers" while the alert had in fact been delivered.
+                if (unicastSentTo.isEmpty()) {
+                    val rescanned = PeerDiscovery.discover(context, port, force = true)
+                    if (rescanned.isNotEmpty()) {
+                        val retrySocket = DatagramSocket()
+                        retrySocket.broadcast = true
+                        for (peer in rescanned) {
+                            val target = runCatching { InetAddress.getByName(peer.address) }.getOrNull()
+                            if (target == null) continue
+                            try {
+                                retrySocket.send(DatagramPacket(bytes, bytes.size, target, port))
+                                sentTo++
+                                unicastSentTo.add("${peer.deviceName}@${peer.address}")
+                            } catch (e: Exception) {
+                                failures += "${peer.address}: ${e.localizedMessage}"
+                            }
+                        }
+                        retrySocket.close()
+                    }
+                }
+
                 withContext(Dispatchers.Main) {
                     if (sentTo == 0) {
-                        val errorMsg = "局域网广播发送失败: ${failures.joinToString("; ")}"
+                        val errorMsg = "局域网发送失败: ${failures.joinToString("; ")}"
                         LogRepository.addLog(errorMsg, isError = true, isPushEvent = true)
                         onResult(false, errorMsg)
                     } else {
-                        val targetsText = targets.joinToString(", ") { it.hostAddress ?: "?" }
-                        val logMsg = "局域网 UDP 广播已发送 (端口 $port, 目标 $targetsText)"
+                        val targetText = buildString {
+                            if (unicastSentTo.isNotEmpty()) {
+                                append("单播 ${unicastSentTo.size} 个接收端 (")
+                                append(unicastSentTo.joinToString(", "))
+                                append(")")
+                            } else {
+                                append("未发现接收端，仅广播")
+                            }
+                            if (broadcastTargets.isNotEmpty()) {
+                                append(", 广播 ")
+                                append(broadcastTargets.joinToString(", ") { it.hostAddress ?: "?" })
+                            }
+                        }
+                        val logMsg = "局域网 UDP 已发送 (端口 $port, $targetText)"
                         LogRepository.addLog(logMsg, isError = false, isPushEvent = true)
                         onResult(true, logMsg)
                     }
@@ -256,7 +326,7 @@ object LanSyncEngine {
             } catch (e: Exception) {
                 e.printStackTrace()
                 withContext(Dispatchers.Main) {
-                    val errorMsg = "局域网广播发送失败: ${e.localizedMessage}"
+                    val errorMsg = "局域网发送失败: ${e.localizedMessage}"
                     LogRepository.addLog(errorMsg, isError = true, isPushEvent = true)
                     onResult(false, errorMsg)
                 }
@@ -352,8 +422,17 @@ object LanSyncEngine {
             var contentLength = 0
             val headers = mutableListOf<String>()
 
+            // The request line is needed to tell a discovery probe from an alert
+            // delivery: probing for open ports alone would match any server on 18888.
+            var requestLine = ""
+            var first = true
+
             while (reader.readLine().also { line = it } != null) {
                 if (line.isNullOrEmpty()) break
+                if (first) {
+                    requestLine = line
+                    first = false
+                }
                 headers.add(line)
                 if (line.lowercase().startsWith("content-length:")) {
                     contentLength = line.substringAfter(":").trim().toIntOrNull() ?: 0
@@ -365,6 +444,33 @@ object LanSyncEngine {
                 reader.read(charBuffer, 0, contentLength)
                 String(charBuffer)
             } else ""
+
+            val path = requestLine.split(' ').getOrNull(1)?.substringBefore('?') ?: ""
+
+            if (path == DISCOVERY_PATH) {
+                // Identity response for the sender's subnet scan. Broadcast and
+                // multicast are both blocked on some networks, so unicast probing is
+                // the only way a sender can find receivers at all; this is what makes
+                // a probe distinguishable from an unrelated service on the same port.
+                val name = AppPreferences(context).deviceName
+                val json = JSONObject().apply {
+                    put("app", DISCOVERY_APP_ID)
+                    put("device", name)
+                    put("port", socket.localPort)
+                }
+                val payload = json.toString()
+                val response = "HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: application/json\r\n" +
+                    "Connection: close\r\n" +
+                    "Content-Length: ${payload.toByteArray(Charsets.UTF_8).size}\r\n\r\n" +
+                    payload
+                output.write(response.toByteArray(Charsets.UTF_8))
+                output.flush()
+                LogRepository.addLog(
+                    "收到发现探测，已响应 (来自 ${socket.inetAddress.hostAddress ?: "未知"})"
+                )
+                return
+            }
 
             if (body.isNotEmpty()) {
                 handleIncomingPayload(context, body, socket.inetAddress.hostAddress ?: "未知")

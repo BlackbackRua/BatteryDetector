@@ -466,7 +466,8 @@ fun BatteryDashboardScreen() {
                                         fontSize = 14.sp
                                     )
                                     Text(
-                                        text = "监控局域网广播，接收同一 Wi-Fi 内其他设备发来的电量预警。",
+                                        text = "监听局域网，接收同一 Wi-Fi 内其他设备发来的电量预警。" +
+                                            "发送方会自动发现本机，无需手动填写 IP。",
                                         fontSize = 12.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
@@ -485,7 +486,8 @@ fun BatteryDashboardScreen() {
                                         fontSize = 14.sp
                                     )
                                     Text(
-                                        text = "定时检测本设备电量，当电量不足时自动向外网 Webhook 或局域网广播发送通知。",
+                                        text = "定时检测本设备电量，当电量不足时自动向外网 Webhook、" +
+                                            "邮件或局域网内的接收端发送通知。",
                                         fontSize = 12.sp,
                                         color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
