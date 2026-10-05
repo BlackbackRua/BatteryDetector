@@ -13,8 +13,8 @@ android {
         applicationId = "com.blackback.batterydetector"
         minSdk = 30
         targetSdk = 37
-        versionCode = 10003
-        versionName = "1.0.3"
+        versionCode = 10100
+        versionName = "1.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
