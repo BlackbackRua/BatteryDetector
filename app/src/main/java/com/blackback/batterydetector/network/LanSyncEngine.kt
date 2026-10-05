@@ -56,9 +56,6 @@ object LanSyncEngine {
     private const val TEST_NOTIFICATION_ID = 10011
     private val ALERT_VIBRATION = longArrayOf(0, 300, 200, 300)
 
-    /** Common home-router subnet, used only if interface discovery yields nothing. */
-    private const val WIFI_BROADCAST_FALLBACK = "192.168.1.255"
-
     /** Window in which an identical repeat alert counts as a duplicate. */
     private const val DEDUP_WINDOW_MS = 5000L
 
@@ -111,87 +108,10 @@ object LanSyncEngine {
     }
 
     /**
-     * Addresses a UDP broadcast should be sent to.
+     * Delivers a battery alert to every receiver found on the LAN.
      *
-     * The limited broadcast address 255.255.255.255 is deliberately not relied on
-     * alone: many consumer routers only forward subnet-directed broadcasts such as
-     * 192.168.1.255 and silently drop the limited form, which looks exactly like
-     * "the other device never received anything". The subnet address derived from
-     * the interface broadcast / netmask is used first, with the limited address kept
-     * as a fallback for networks that do forward it.
-     */
-    private fun broadcastAddresses(): List<InetAddress> {
-        val addresses = LinkedHashSet<InetAddress>()
-
-        fun add(host: String?) {
-            if (host.isNullOrBlank()) return
-            runCatching { InetAddress.getByName(host) }
-                .getOrNull()
-                ?.let { addresses.add(it) }
-        }
-
-        try {
-            for (intf in Collections.list(NetworkInterface.getNetworkInterfaces())) {
-                if (!intf.isUp || intf.isLoopback) continue
-                for (ia in intf.interfaceAddresses) {
-                    val addr = ia.address ?: continue
-                    if (addr.isLoopbackAddress || addr is java.net.Inet6Address) continue
-                    // The one the kernel considers correct for this interface.
-                    val br = ia.broadcast
-                    if (br != null && !br.isLoopbackAddress) add(br.hostAddress)
-                    // Some ROMs report 255.255.255.255 here, so derive it as well.
-                    add(subnetBroadcast(addr.hostAddress, ia.networkPrefixLength.toInt()))
-                }
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-
-        // Common home-network fallback, and the limited address last.
-        add(WIFI_BROADCAST_FALLBACK)
-        add("255.255.255.255")
-        return addresses.toList()
-    }
-
-    /**
-     * Derives e.g. 192.168.1.255 from 192.168.1.7 with a /24 prefix.
-     *
-     * Internal rather than private so it can be unit tested: getting this wrong is
-     * exactly the class of bug that makes broadcasts silently go nowhere.
-     */
-    internal fun subnetBroadcast(ipv4: String, prefixLength: Int): String? {
-        if (prefixLength !in 1..31) return null
-        val parts = ipv4.split('.')
-        if (parts.size != 4) return null
-        var value = 0L
-        for (p in parts) {
-            val octet = p.toIntOrNull() ?: return null
-            if (octet !in 0..255) return null
-            value = (value shl 8) or octet.toLong()
-        }
-        val mask = (0xFFFFFFFFL shl (32 - prefixLength)) and 0xFFFFFFFFL
-        val broadcast = (value and mask) or (mask.inv() and 0xFFFFFFFFL)
-        return listOf(24, 16, 8, 0).joinToString(".") {
-            ((broadcast shr it) and 0xFF).toString()
-        }
-    }
-
-    /** Reads the Wi-Fi netmask as a prefix length, for the fallback path only. */
-    @Suppress("DEPRECATION")
-    private fun wifiPrefixLength(context: Context): Int? {
-        return try {
-            val wifiManager = context.applicationContext
-                .getSystemService(Context.WIFI_SERVICE) as WifiManager
-            val mask = wifiManager.dhcpInfo?.netmask ?: return null
-            if (mask == 0) return null
-            Integer.bitCount(mask)
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Broadcast battery alert packet over UDP to the LAN.
+     * Delivery is unicast to peers discovered by [PeerDiscovery], never broadcast:
+     * see the notes in the body for why broadcasting was dropped.
      */
     fun sendUdpBroadcast(
         context: Context,
@@ -225,32 +145,20 @@ object LanSyncEngine {
 
                 val bytes = json.toByteArray(Charsets.UTF_8)
 
-                // Discovery by unicast first, then the broadcast addresses.
+                // Delivery is unicast only.
                 //
-                // On a network that drops broadcast and multicast - client isolation,
-                // or an AP that suppresses broadcast airtime - the broadcast below
-                // never arrives, and it fails silently because a UDP send always
-                // appears to succeed. The unicast peers found by scanning are what
-                // actually gets the alert through there, and they are also what makes
-                // several receivers work at once: every discovered address is sent to.
+                // It used to send to the broadcast addresses as well, on the theory
+                // that broadcast finds receivers without a scan. Two things ruled that
+                // out: on a network with client isolation the broadcast silently never
+                // arrives (a UDP send always reports success), and where it does
+                // arrive the receiver got a second copy of every alert, which showed up
+                // as a duplicate notification. The scan already finds every receiver,
+                // so the broadcast only added duplicates and one more way to fail.
                 val peers = PeerDiscovery.discover(context, port)
 
-                // Also make sure the Wi-Fi subnet is represented, in case the
-                // interface walk above found nothing usable.
-                val broadcastTargets = LinkedHashSet(broadcastAddresses())
-                wifiPrefixLength(context)?.let { prefix ->
-                    getLocalIpAddress(context).takeIf { it != "127.0.0.1" }?.let { ip ->
-                        subnetBroadcast(ip, prefix)?.let { host ->
-                            runCatching { InetAddress.getByName(host) }.getOrNull()
-                                ?.let { broadcastTargets.add(it) }
-                        }
-                    }
-                }
-
                 val socket = DatagramSocket()
-                socket.broadcast = true
                 var sentTo = 0
-                val unicastSentTo = mutableListOf<String>()
+                val sentToPeers = mutableListOf<String>()
                 val failures = mutableListOf<String>()
 
                 for (peer in peers) {
@@ -259,38 +167,26 @@ object LanSyncEngine {
                     try {
                         socket.send(DatagramPacket(bytes, bytes.size, target, port))
                         sentTo++
-                        unicastSentTo.add("${peer.deviceName}@${peer.address}")
+                        sentToPeers.add("${peer.deviceName}@${peer.address}")
                     } catch (e: Exception) {
                         failures += "${peer.address}: ${e.localizedMessage}"
                     }
                 }
-
-                for (target in broadcastTargets) {
-                    try {
-                        socket.send(DatagramPacket(bytes, bytes.size, target, port))
-                        sentTo++
-                    } catch (e: Exception) {
-                        failures += "${target.hostAddress}: ${e.localizedMessage}"
-                    }
-                }
                 socket.close()
 
-                // Nothing found can simply mean the receiver was mid-restart, so one
-                // forced rescan runs before giving up. The addresses actually reached
-                // are tracked separately: reporting the first, empty result made the
-                // log claim "0 receivers" while the alert had in fact been delivered.
-                if (unicastSentTo.isEmpty()) {
+                // Finding nothing can simply mean the receiver was mid-restart, so one
+                // forced rescan runs before giving up.
+                if (sentToPeers.isEmpty()) {
                     val rescanned = PeerDiscovery.discover(context, port, force = true)
                     if (rescanned.isNotEmpty()) {
                         val retrySocket = DatagramSocket()
-                        retrySocket.broadcast = true
                         for (peer in rescanned) {
                             val target = runCatching { InetAddress.getByName(peer.address) }.getOrNull()
                             if (target == null) continue
                             try {
                                 retrySocket.send(DatagramPacket(bytes, bytes.size, target, port))
                                 sentTo++
-                                unicastSentTo.add("${peer.deviceName}@${peer.address}")
+                                sentToPeers.add("${peer.deviceName}@${peer.address}")
                             } catch (e: Exception) {
                                 failures += "${peer.address}: ${e.localizedMessage}"
                             }
@@ -301,24 +197,17 @@ object LanSyncEngine {
 
                 withContext(Dispatchers.Main) {
                     if (sentTo == 0) {
-                        val errorMsg = "局域网发送失败: ${failures.joinToString("; ")}"
+                        val detail = if (failures.isEmpty()) {
+                            "未发现接收端"
+                        } else {
+                            failures.joinToString("; ")
+                        }
+                        val errorMsg = "局域网发送失败: $detail"
                         LogRepository.addLog(errorMsg, isError = true, isPushEvent = true)
                         onResult(false, errorMsg)
                     } else {
-                        val targetText = buildString {
-                            if (unicastSentTo.isNotEmpty()) {
-                                append("单播 ${unicastSentTo.size} 个接收端 (")
-                                append(unicastSentTo.joinToString(", "))
-                                append(")")
-                            } else {
-                                append("未发现接收端，仅广播")
-                            }
-                            if (broadcastTargets.isNotEmpty()) {
-                                append(", 广播 ")
-                                append(broadcastTargets.joinToString(", ") { it.hostAddress ?: "?" })
-                            }
-                        }
-                        val logMsg = "局域网 UDP 已发送 (端口 $port, $targetText)"
+                        val logMsg = "局域网 UDP 已发送 (端口 $port, " +
+                            "接收端 ${sentToPeers.joinToString(", ")})"
                         LogRepository.addLog(logMsg, isError = false, isPushEvent = true)
                         onResult(true, logMsg)
                     }
